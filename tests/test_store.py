@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
 import os
+import sqlite3
+from dataclasses import asdict
 from pathlib import Path
 
+import pytest
+
 from karsija.analysis import Shot
-from karsija.store import Store
+from karsija.store import SCHEMA_VERSION, Store
 
 
 def make_shot(path: Path) -> Shot:
@@ -83,3 +88,49 @@ def test_settings_roundtrip(tmp_path: Path) -> None:
     store.commit()
     store.close()
     assert Store(path).get_settings() == {"abs_blur": 12.5, "hamming": 40}
+
+
+def test_mark_moved_and_back(tmp_path: Path) -> None:
+    store = Store(tmp_path / "karsija.sqlite")
+    shot = make_shot(tmp_path / "a.jpg")
+    event = store.event_id("2025/2025-06-01-test")
+    store.put(event, shot, "sig")
+    store.mark_moved([shot.key])
+    assert store.db.execute("SELECT state FROM shots").fetchone() == ("moved",)
+    store.put(event, shot, "sig2")         # moved back and analysed again
+    assert store.db.execute("SELECT state FROM shots").fetchone() == ("present",)
+
+
+def test_schema_version(tmp_path: Path) -> None:
+    path = tmp_path / "karsija.sqlite"
+    Store(path).close()
+    store = Store(path)
+    assert store.db.execute("PRAGMA user_version").fetchone() == (SCHEMA_VERSION,)
+    store.db.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+    store.close()
+    with pytest.raises(RuntimeError, match="uudempi"):
+        Store(path)
+
+
+def test_import_legacy_cache(tmp_path: Path) -> None:
+    root = tmp_path / "lib"
+    event = root / "2025" / "2025-06-01-test"
+    event.mkdir(parents=True)
+    inside = make_shot(event / "a.jpg")
+    outside = make_shot(tmp_path / "b.jpg")
+    not_event = make_shot(root / "c.jpg")
+    legacy = sqlite3.connect(tmp_path / "cache.sqlite")
+    legacy.execute("CREATE TABLE shots (key TEXT PRIMARY KEY, sig TEXT, data TEXT)")
+    for s in (inside, outside, not_event):
+        d = asdict(s)
+        for k in ("group", "verdict", "reason"):
+            d.pop(k)
+        legacy.execute("INSERT INTO shots VALUES (?, ?, ?)", (s.key, Store.signature(s.files), json.dumps(d)))
+    legacy.commit()
+    legacy.close()
+
+    store = Store(tmp_path / "karsija.sqlite")
+    assert store.import_legacy_cache(tmp_path / "cache.sqlite", root) == 1
+    assert store.get(inside.key, Store.signature(inside.files)) == inside
+    assert store.get(outside.key, Store.signature(outside.files)) is None
+    assert store.db.execute("SELECT rel_path FROM events").fetchall() == [("2025/2025-06-01-test",)]

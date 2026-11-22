@@ -1,13 +1,23 @@
-"""SQLite store for events, analysed shots and settings (schema from #1)."""
+"""SQLite store for events, analysed shots and settings.
+
+The store doubles as the analysis cache: a shot is re-analysed only when its
+``signature`` (path + size + mtime of every file) changes. The user-decision
+columns of ``shots`` (``user_verdict``, ``rating``, ``decided_at``) and the
+``settings`` table are reserved for the review UI planned in issue #1; the
+``scan`` command does not write them.
+"""
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
+from dataclasses import fields
 from pathlib import Path, PurePosixPath
 
 from karsija.analysis import Shot
+from karsija.library import EVENT_DIR_RE
 
 CACHE_VERSION = 4
 SCHEMA_VERSION = 1
@@ -56,8 +66,13 @@ class Store:
     def __init__(self, path: Path | str):
         self.db = sqlite3.connect(path)
         self.db.execute("PRAGMA foreign_keys = ON")
+        version = self.db.execute("PRAGMA user_version").fetchone()[0]
+        if version > SCHEMA_VERSION:
+            self.db.close()
+            raise RuntimeError(f"{path}: tietokannan versio {version} on uudempi kuin tämä karsija ({SCHEMA_VERSION})")
         self.db.executescript(SCHEMA)
-        self.db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        if version < SCHEMA_VERSION:
+            self.db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     @staticmethod
     def signature(files: list[str]) -> str:
@@ -96,7 +111,7 @@ class Store:
             f"""INSERT INTO shots (event_id, key, files, sig, {', '.join(_METRICS)})
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (key) DO UPDATE SET
-                    event_id = excluded.event_id, files = excluded.files, sig = excluded.sig,
+                    event_id = excluded.event_id, files = excluded.files, sig = excluded.sig, state = 'present',
                     {', '.join(f'{m} = excluded.{m}' for m in _METRICS)}""",
             (event_id, shot.key, json.dumps(shot.files), sig, shot.taken, shot.sharp, shot.sharp_global,
              shot.clip_hi, shot.clip_lo, shot.dhash, json.dumps(shot.hist), shot.error),
@@ -108,6 +123,37 @@ class Store:
             "UPDATE shots SET group_id = ?, auto_verdict = ?, reason = ? WHERE key = ?",
             [(s.group, s.verdict, s.reason, s.key) for s in shots],
         )
+
+    def mark_moved(self, keys: list[str]) -> None:
+        """Record that the files of these shots were moved into the reject folder."""
+        self.db.executemany("UPDATE shots SET state = 'moved' WHERE key = ?", [(k,) for k in keys])
+
+    def import_legacy_cache(self, path: Path, root: Path) -> int:
+        """Copy analyses from the old ``cache.sqlite`` of karsija.py. Returns the number of shots imported.
+
+        Its signatures use the same format, so the imported rows are cache hits as long as the files are unchanged.
+        Rows outside ``root`` or outside a ``YYYY/YYYY-MM-DD...`` event folder are skipped.
+        """
+        names = {f.name for f in fields(Shot)}
+        legacy = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        try:
+            rows = legacy.execute("SELECT key, sig, data FROM shots").fetchall()
+        finally:
+            legacy.close()
+        imported = 0
+        for key, sig, data in rows:
+            try:
+                rel = Path(key).parent.relative_to(root)
+            except ValueError:
+                continue
+            if len(rel.parts) != 2 or not re.fullmatch(r"\d{4}", rel.parts[0]) or not EVENT_DIR_RE.match(rel.parts[1]):
+                continue
+            shot = Shot(**{k: v for k, v in json.loads(data).items() if k in names})
+            if self.db.execute("SELECT 1 FROM shots WHERE key = ?", (key,)).fetchone():
+                continue
+            self.put(self.event_id(rel.as_posix()), shot, sig)
+            imported += 1
+        return imported
 
     def get_settings(self) -> dict[str, float]:
         return {k: json.loads(v) for k, v in self.db.execute("SELECT key, value FROM settings")}

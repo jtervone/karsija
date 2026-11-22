@@ -125,19 +125,28 @@ def write_csv(report_dir: Path, results: dict[Path, list[Shot]]) -> Path:
 
 
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
+MOVE_KINDS = {"blurry", "similar"}
+SCAN_EPILOG = ("Mitään ei poisteta. --write-xmp kirjoittaa XMP-sivutiedoston vain, jos sellaista ei vielä ole. "
+               f"--move siirtää karsitut tapahtumakansion {REJECT_DIR}-alikansioon, josta ne voi siirtää takaisin.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="karsija", description="Kuvien karsinta-apu.")
     sub = ap.add_subparsers(dest="command", required=True)
 
     sc = sub.add_parser("scan", help="analysoi kirjasto ja kirjoita raportti",
-                        description="Etsi epäterävät kuvat ja valitse samankaltaisista paras.")
+                        description="Etsi epäterävät kuvat ja valitse samankaltaisista paras.",
+                        epilog=SCAN_EPILOG)
     sc.add_argument("root", type=Path, help="kuvakirjaston juuri (sisältää YYYY-kansiot)")
     sc.add_argument("--only", default="",
                     help="käsittele vain kansiot joiden polku sisältää tämän (esim. 2025 tai 2025-06)")
-    sc.add_argument("--report", type=Path, default=Path("karsintaraportti"), help="raporttikansio")
-    sc.add_argument("--workers", type=int, default=os.cpu_count() or 4)
+    sc.add_argument("--report", type=Path, default=Path("karsintaraportti"),
+                    help="raporttikansio (myös karsija.sqlite-tietokanta)")
+    sc.add_argument("--workers", type=int, default=os.cpu_count() or 4,
+                    help="rinnakkaisten analyysiprosessien määrä (oletus: CPU-ytimien määrä)")
     sc.add_argument("--gap", type=float, default=3.0, help="max sekunnit peräkkäisten kuvien välillä samassa ryhmässä")
     sc.add_argument("--hamming", type=int, default=40, help="max dHash-ero (0-256) samankaltaisille")
     sc.add_argument("--abs-blur", type=float, default=10.0, help="tätä pienempi terävyys = epäterävä")
@@ -151,6 +160,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and not argv[0].startswith("-") and argv[0] != "scan" and Path(argv[0]).expanduser().is_dir():
+        # the old script took the library root as its first argument
+        print(f"Käytä: karsija scan {argv[0]} ...", file=sys.stderr)
+        return 2
     args = build_parser().parse_args(argv)
     return int(args.func(args))
 
@@ -160,14 +174,61 @@ def scan(args: argparse.Namespace) -> int:
     if not root.is_dir():
         print(f"Kansiota ei löydy: {root}", file=sys.stderr)
         return 1
+    move_kinds = {k.strip() for k in args.move.split(",") if k.strip()}
+    if move_kinds - MOVE_KINDS:
+        print("--move hyväksyy vain arvot blurry,similar", file=sys.stderr)
+        return 1
     events = [e for e in find_event_dirs(root) if args.only in str(e.relative_to(root))]
     if not events:
         print("Ei YYYY/YYYY-MM-DD* -kansioita.", file=sys.stderr)
         return 1
 
     args.report.mkdir(parents=True, exist_ok=True)
-    store = Store(args.report / "karsija.sqlite")
+    db_path, legacy_path = args.report / "karsija.sqlite", args.report / "cache.sqlite"
+    new_db = not db_path.exists()
+    store = Store(db_path)
+    try:
+        if new_db and legacy_path.exists():
+            imported = store.import_legacy_cache(legacy_path, root)
+            store.commit()
+            print(f"Tuotiin {imported} analyysiä vanhasta välimuistista ({legacy_path.name}); tiedoston voi poistaa.")
+        results = analyse_events(store, root, events, args.workers)
 
+        xmp_stats = {"written": 0, "exists": 0, "skip": 0}
+        moved = 0
+        for shots in results.values():
+            group_shots(shots, args.gap, args.hamming, 0.9)
+            judge(shots, args.abs_blur, args.rel_blur, args.sim_keep)
+            store.save_verdicts(shots)
+            if args.write_xmp:
+                for s in shots:
+                    xmp_stats[write_xmp(s)] += 1
+            if move_kinds:
+                moved_keys = [s.key for s in shots if move_rejects(s, move_kinds)]
+                store.mark_moved(moved_keys)
+                moved += len(moved_keys)
+    finally:
+        store.commit()
+        store.close()
+
+    csv_path = write_csv(args.report, results)
+    html_path = write_report(args.report, results, root, args.workers)
+
+    counts: dict[str, int] = {}
+    for shots in results.values():
+        for s in shots:
+            counts[s.verdict] = counts.get(s.verdict, 0) + 1
+    print("Tulokset: " + ", ".join(f"{VERDICT_FI.get(k, k)} {v}" for k, v in counts.items()))
+    if args.write_xmp:
+        print(f"XMP: {xmp_stats['written']} kirjoitettu, {xmp_stats['exists']} oli jo olemassa (ei koskettu)")
+    if move_kinds:
+        print(f"Siirretty {moved} kuvaa {REJECT_DIR}-alikansioihin")
+    print(f"Raportti: {html_path.resolve()}\nCSV:      {csv_path.resolve()}")
+    return 0
+
+
+def analyse_events(store: Store, root: Path, events: list[Path], workers: int) -> dict[Path, list[Shot]]:
+    """Analyse every shot of the events, reusing stored results for unchanged files."""
     jobs: list[tuple[Path, int, str, list[str], str]] = []
     results: dict[Path, list[Shot]] = {}
     for ev in events:
@@ -185,7 +246,7 @@ def scan(args: argparse.Namespace) -> int:
     print(f"{len(events)} kansiota, {cached + len(jobs)} kuvaa ({cached} välimuistista, {len(jobs)} analysoitavana)")
 
     t0 = time.time()
-    with cf.ProcessPoolExecutor(args.workers) as ex:
+    with cf.ProcessPoolExecutor(workers) as ex:
         futs = {ex.submit(analyse_file, p, f): (ev, eid, sig) for ev, eid, p, f, sig in jobs}
         for i, fut in enumerate(cf.as_completed(futs), 1):
             ev, eid, sig = futs[fut]
@@ -199,39 +260,4 @@ def scan(args: argparse.Namespace) -> int:
                 print(f"\r  {i}/{len(jobs)}  ({rate:.1f} kuvaa/s)", end="", flush=True)
     if jobs:
         print()
-    store.commit()
-
-    move_kinds = {k.strip() for k in args.move.split(",") if k.strip()}
-    if move_kinds - {"blurry", "similar"}:
-        print("--move hyväksyy vain arvot blurry,similar", file=sys.stderr)
-        store.close()
-        return 1
-
-    xmp_stats = {"written": 0, "exists": 0, "skip": 0}
-    moved = 0
-    for shots in results.values():
-        group_shots(shots, args.gap, args.hamming, 0.9)
-        judge(shots, args.abs_blur, args.rel_blur, args.sim_keep)
-        store.save_verdicts(shots)
-        if args.write_xmp:
-            for s in shots:
-                xmp_stats[write_xmp(s)] += 1
-        if move_kinds:
-            moved += sum(move_rejects(s, move_kinds) for s in shots)
-    store.commit()
-    store.close()
-
-    csv_path = write_csv(args.report, results)
-    html_path = write_report(args.report, results, root, args.workers)
-
-    counts: dict[str, int] = {}
-    for shots in results.values():
-        for s in shots:
-            counts[s.verdict] = counts.get(s.verdict, 0) + 1
-    print("Tulokset: " + ", ".join(f"{VERDICT_FI.get(k, k)} {v}" for k, v in counts.items()))
-    if args.write_xmp:
-        print(f"XMP: {xmp_stats['written']} kirjoitettu, {xmp_stats['exists']} oli jo olemassa (ei koskettu)")
-    if move_kinds:
-        print(f"Siirretty {moved} kuvaa {REJECT_DIR}-alikansioihin")
-    print(f"Raportti: {html_path.resolve()}\nCSV:      {csv_path.resolve()}")
-    return 0
+    return results
