@@ -89,7 +89,7 @@ body.hide-keep .card.keep, body.hide-best .card.best{{display:none}}
         groups: dict[int, list[Shot]] = {}
         for s in sorted(shots, key=lambda s: s.taken):
             groups.setdefault(s.group, []).append(s)
-        for gid, members in groups.items():
+        for _gid, members in groups.items():
             multi = " multi" if len(members) > 1 else ""
             parts.append(f'<div class="group{multi}">')
             for s in members:

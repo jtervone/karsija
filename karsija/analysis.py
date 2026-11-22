@@ -98,7 +98,7 @@ def color_hist(bgr: np.ndarray) -> list[float]:
 
 
 def hist_similarity(a: list[float], b: list[float]) -> float:
-    return float(cv2.compareHist(np.float32(a), np.float32(b), cv2.HISTCMP_CORREL))
+    return float(cv2.compareHist(np.asarray(a, dtype=np.float32), np.asarray(b, dtype=np.float32), cv2.HISTCMP_CORREL))
 
 
 def analyse_file(primary: str, files: list[str]) -> Shot:

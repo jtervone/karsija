@@ -40,7 +40,7 @@ def load_image(path: Path) -> tuple[np.ndarray, Image.Image | None]:
                 pil = Image.open(io.BytesIO(thumb.data))
                 pil.load()
             elif thumb is not None and thumb.format == rawpy.ThumbFormat.BITMAP:
-                pil = Image.fromarray(thumb.data)
+                pil = Image.fromarray(np.asarray(thumb.data))
             else:
                 rgb = raw.postprocess(half_size=True, use_camera_wb=True)
                 pil = Image.fromarray(rgb)
