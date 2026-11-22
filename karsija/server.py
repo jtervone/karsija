@@ -13,17 +13,20 @@ import queue
 import sqlite3
 import threading
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Iterator, Sequence
+from concurrent.futures.process import BrokenProcessPool
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.datastructures import Headers
+from starlette.types import ASGIApp, Receive, Scope, Send
 
-from karsija.analysis import analyse_file, group_and_judge
+from karsija.analysis import Shot, analyse_file, group_and_judge
 from karsija.library import JPEG_EXT, RAW_EXT, UnsafePath, collect_shots, find_event_dirs, safe_path
 from karsija.store import UNSET, Store
 
@@ -56,13 +59,17 @@ class Broker:
                 pass
 
     async def stream(self, is_disconnected: Callable[[], Awaitable[bool]],
-                     initial: Sequence[str] = ()) -> AsyncIterator[str]:
-        """SSE body: ``initial`` messages, then every published event, with keep-alive comments when idle."""
+                     initial: Callable[[], Sequence[str]] = tuple) -> AsyncIterator[str]:
+        """SSE body: the messages of ``initial()``, then every published event, with keep-alive comments when idle.
+
+        ``initial`` runs after the subscription is in place, so an event published meanwhile is not lost (at worst
+        the client gets it twice).
+        """
         sub = (asyncio.get_running_loop(), asyncio.Queue[str]())
         with self._lock:
             self._subs.add(sub)
         try:
-            for msg in initial:
+            for msg in await asyncio.to_thread(initial):
                 yield msg
             while not await is_disconnected():
                 try:
@@ -129,13 +136,16 @@ class JobRunner:
 
     def run(self, job_id: int, scope: str) -> None:
         store = Store(self.db_path)
+        futs: dict[cf.Future[Shot], tuple[int, str]] = {}
         try:
             self._publish(store, job_id, status="running", started=time.time())
             if scope == "all":
                 events = sync_events(store, self.root)
             else:
-                rel = store.db.execute("SELECT rel_path FROM events WHERE id = ?", (int(scope),)).fetchone()[0]
-                events = [(int(scope), safe_path(self.root, rel))]
+                row = store.db.execute("SELECT rel_path FROM events WHERE id = ?", (int(scope),)).fetchone()
+                if row is None:
+                    raise LookupError("tapahtumaa ei ole")
+                events = [(int(scope), safe_path(self.root, row[0]))]
 
             todo: list[tuple[int, str, list[str], str]] = []
             on_disk: dict[int, set[str]] = {}
@@ -150,12 +160,14 @@ class JobRunner:
                     sig = Store.signature(files)
                     if store.get(primary, sig) is None:       # cache hit by signature skips the work
                         todo.append((event_id, primary, files, sig))
-                store.commit()                                # get() may have stored EXIF of old rows
+            for event_id, keys in on_disk.items():
+                store.mark_missing(event_id, keys)
+            store.commit()                                    # get() may also have stored EXIF of old rows
             self._publish(store, job_id, total=len(todo))
 
             if todo:
                 pool = self._get_pool()
-                futs = {pool.submit(analyse_file, p, f): (eid, sig) for eid, p, f, sig in todo}
+                futs.update({pool.submit(analyse_file, p, f): (eid, sig) for eid, p, f, sig in todo})
                 for done, fut in enumerate(cf.as_completed(futs), 1):
                     eid, sig = futs[fut]
                     store.put(eid, fut.result(), sig)
@@ -168,6 +180,12 @@ class JobRunner:
                 store.save_verdicts(shots)
             self._publish(store, job_id, status="done", finished=time.time())
         except Exception as e:  # noqa: BLE001
+            for f in futs:
+                f.cancel()
+            if isinstance(e, BrokenProcessPool) and self._pool is not None:
+                # a worker died (killed, crashed in a native library): the pool is unusable, start a new one next time
+                self._pool.shutdown(wait=False, cancel_futures=True)
+                self._pool = None
             store.db.rollback()
             self._publish(store, job_id, status="failed", error=f"{type(e).__name__}: {e}", finished=time.time())
         finally:
@@ -202,6 +220,56 @@ class DecisionRequest(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
+# Request guard
+# --------------------------------------------------------------------------- #
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "[::1]")
+WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def host_name(host: str) -> str:
+    """``Host`` header without the port: ``127.0.0.1:8765`` -> ``127.0.0.1``, ``[::1]:8765`` -> ``[::1]``."""
+    host = host.strip().lower()
+    if host.startswith("["):
+        return host[: host.find("]") + 1]
+    return host.split(":")[0]
+
+
+class RequestGuard:
+    """Keeps other web sites out, although the browser can reach the server.
+
+    - ``Host`` must be one of ``allowed_hosts``: a DNS-rebinding page (``Host: attacker.example``) cannot read
+      the library.
+    - Writes (POST, PUT, PATCH, DELETE) must be ``Content-Type: application/json``, which a cross-site form or
+      ``no-cors`` fetch cannot send without a CORS preflight (and the server allows no cross-origin requests), and
+      an ``Origin`` header, when present, must be the server's own.
+    """
+
+    def __init__(self, app: ASGIApp, allowed_hosts: Collection[str]):
+        self.app = app
+        self.allowed_hosts = {h.lower() for h in allowed_hosts}
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = Headers(scope=scope)
+        host = headers.get("host", "")
+        response: Response | None = None
+        if "*" not in self.allowed_hosts and host_name(host) not in self.allowed_hosts:
+            response = JSONResponse({"detail": "tuntematon Host-otsake"}, 400)
+        elif scope["method"] in WRITE_METHODS:
+            origin = headers.get("origin")
+            if origin is not None and origin.lower() != f"{scope['scheme']}://{host}".lower():
+                response = JSONResponse({"detail": "pyyntö toiselta sivustolta"}, 403)
+            elif headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
+                response = JSONResponse({"detail": "vaatii Content-Type: application/json"}, 415)
+        if response is not None:
+            await response(scope, receive, send)
+        else:
+            await self.app(scope, receive, send)
+
+
+# --------------------------------------------------------------------------- #
 # App
 # --------------------------------------------------------------------------- #
 def get_store(request: Request) -> Iterator[Store]:
@@ -217,8 +285,9 @@ def get_store(request: Request) -> Iterator[Store]:
 Db = Annotated[Store, Depends(get_store)]
 
 
-def create_app(root: Path, db_path: Path, workers: int = 2,
-               on_ready: Callable[[], None] | None = None) -> FastAPI:
+def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[], None] | None = None,
+               allowed_hosts: Collection[str] = LOOPBACK_HOSTS) -> FastAPI:
+    """``allowed_hosts``: accepted ``Host`` header names (``"*"`` = any), see ``RequestGuard``."""
     root = root.resolve()
     broker = Broker()
     runner = JobRunner(root, db_path, workers, broker)
@@ -236,6 +305,7 @@ def create_app(root: Path, db_path: Path, workers: int = 2,
         runner.stop()
 
     app = FastAPI(title="karsija", lifespan=lifespan)
+    app.add_middleware(RequestGuard, allowed_hosts=allowed_hosts)
     app.state.root, app.state.db_path, app.state.runner, app.state.broker = root, db_path, runner, broker
 
     def rel(path: str) -> str:
@@ -281,6 +351,7 @@ def create_app(root: Path, db_path: Path, workers: int = 2,
     # ----------------------------------------------------------------------- #
     @app.get("/api/library")
     def library(store: Db) -> dict[str, Any]:
+        # registers new event folders as a side effect, so the list matches the disk without running an analysis
         events = event_summaries(store, [eid for eid, _ in sync_events(store, root)])
         years: dict[int, list[dict[str, Any]]] = {}
         for ev in events:
@@ -307,12 +378,15 @@ def create_app(root: Path, db_path: Path, workers: int = 2,
     # declared before /api/events/{event_id}
     @app.get("/api/events/stream")
     async def events_stream(request: Request) -> StreamingResponse:
-        store = Store(db_path)
-        try:
-            ids = [r[0] for r in store.db.execute("SELECT id FROM jobs WHERE status IN ('queued', 'running')")]
-            initial = [sse("job", store.job(i)) for i in ids]
-        finally:
-            store.close()
+        def initial() -> list[str]:
+            """Queued and running jobs, so a new client sees progress at once."""
+            store = Store(db_path)
+            try:
+                ids = [r[0] for r in store.db.execute("SELECT id FROM jobs WHERE status IN ('queued', 'running')")]
+                return [sse("job", store.job(i)) for i in ids]
+            finally:
+                store.close()
+
         return StreamingResponse(broker.stream(request.is_disconnected, initial), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import shutil
+import socket
 import sqlite3
 import time
 from pathlib import Path
@@ -12,7 +13,8 @@ import pytest
 from conftest import BURST, EXPECTED, Library
 from fastapi.testclient import TestClient
 
-from karsija.cli import main
+from karsija import cli as cli_mod
+from karsija.cli import bind_error, main
 from karsija.store import default_db_path
 
 
@@ -113,6 +115,7 @@ def fake_uvicorn(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(uvicorn, "run", lambda app, **kw: calls.append({"app": app, **kw}))
+    monkeypatch.setattr(cli_mod, "bind_error", lambda host, port: "")
     return calls
 
 
@@ -168,3 +171,44 @@ def test_serve_opens_browser_when_ready(library: Library, tmp_path: Path, monkey
 def test_serve_requires_existing_root(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["serve", str(tmp_path / "missing")]) == 1
     assert "Kansiota ei löydy" in capsys.readouterr().err
+
+
+def allowed_hosts(app: Any) -> list[str]:
+    (guard,) = [m for m in app.user_middleware if m.cls.__name__ == "RequestGuard"]
+    return list(guard.kwargs["allowed_hosts"])
+
+
+def test_serve_any_address_prints_a_usable_url(library: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                               fake_uvicorn: list[dict[str, Any]],
+                                               capsys: pytest.CaptureFixture[str]) -> None:
+    import webbrowser
+
+    opened: list[str] = []
+    monkeypatch.setattr(webbrowser, "open", opened.append)
+    assert main(["serve", str(library.root), "--host", "0.0.0.0", "--port", "9002", "--db", str(tmp_path / "k")]) == 0
+    assert "Osoite:       http://127.0.0.1:9002/  (kuuntelee kaikissa" in capsys.readouterr().out
+    assert allowed_hosts(fake_uvicorn[0]["app"]) == ["*"]
+    with TestClient(fake_uvicorn[0]["app"]):
+        pass
+    for _ in range(50):
+        if opened:
+            break
+        time.sleep(0.02)
+    assert opened == ["http://127.0.0.1:9002/"]
+
+
+def test_serve_allows_its_own_host_name(library: Library, tmp_path: Path, fake_uvicorn: list[dict[str, Any]]) -> None:
+    for host in ("::1", "192.168.1.10"):
+        assert main(["serve", str(library.root), "--host", host, "--no-browser", "--db", str(tmp_path / "k")]) == 0
+    assert allowed_hosts(fake_uvicorn[0]["app"]) == ["127.0.0.1", "localhost", "[::1]", "[::1]"]
+    assert allowed_hosts(fake_uvicorn[1]["app"]) == ["127.0.0.1", "localhost", "[::1]", "192.168.1.10"]
+
+
+def test_serve_busy_port(library: Library, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    with socket.create_server(("127.0.0.1", 0)) as busy:
+        port = busy.getsockname()[1]
+        assert bind_error("127.0.0.1", port) == f"Portti {port} on jo käytössä; valitse toinen --port."
+        assert main(["serve", str(library.root), "--port", str(port), "--no-browser", "--db", str(tmp_path / "k")]) == 1
+    out, err = capsys.readouterr()
+    assert "on jo käytössä" in err and "Osoite" not in out
+    assert bind_error("127.0.0.1", port) == ""

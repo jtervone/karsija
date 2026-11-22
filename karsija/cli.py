@@ -5,10 +5,12 @@ from __future__ import annotations
 import argparse
 import concurrent.futures as cf
 import csv
+import errno
 import html
 import ipaddress
 import os
 import re
+import socket
 import sys
 import time
 from datetime import datetime
@@ -134,8 +136,8 @@ SCAN_EPILOG = ("Mitään ei poisteta. --write-xmp kirjoittaa XMP-sivutiedoston v
                f"--move siirtää karsitut tapahtumakansion {REJECT_DIR}-alikansioon, josta ne voi siirtää takaisin.")
 
 
-SERVE_EPILOG = ("Palvelin ei kirjoita kirjastoon mitään: päätökset ja analyysit tallentuvat tietokantaan "
-                "kirjaston ulkopuolelle.")
+SERVE_EPILOG = ("Palvelin ei kirjoita kirjastoon mitään: päätökset ja analyysit tallentuvat tietokantaan, "
+                "oletuksena kirjaston ulkopuolelle (ks. --db).")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -253,13 +255,27 @@ def is_loopback(host: str) -> bool:
         return False
 
 
+def bind_error(host: str, port: int) -> str:
+    """Why the server could not listen on host:port, or "" if it can. Checked before uvicorn starts, which would
+    otherwise fail with its own English log line after the address has been printed."""
+    try:
+        family = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[0][0]
+        with socket.create_server((host, port), family=family):
+            pass
+    except OSError as e:
+        if e.errno == errno.EADDRINUSE:
+            return f"Portti {port} on jo käytössä; valitse toinen --port."
+        return f"Osoitteessa {host}:{port} ei voi kuunnella: {e.strerror or e}"
+    return ""
+
+
 def serve(args: argparse.Namespace) -> int:
     import threading
     import webbrowser
 
     import uvicorn
 
-    from karsija.server import create_app
+    from karsija.server import LOOPBACK_HOSTS, create_app
 
     root = args.root.expanduser().resolve()
     if not root.is_dir():
@@ -271,16 +287,22 @@ def serve(args: argparse.Namespace) -> int:
         print(f"VAROITUS: palvelin kuuntelee osoitteessa {args.host}. Kuka tahansa verkossa voi selata kirjastoa "
               "ja tehdä päätöksiä; palvelimessa ei ole kirjautumista. Käytä vain luotetussa verkossa.",
               file=sys.stderr)
+    if error := bind_error(args.host, args.port):
+        print(error, file=sys.stderr)
+        return 1
     host = f"[{args.host}]" if ":" in args.host else args.host
-    url = f"http://{host}:{args.port}/"
-    print(f"Kirjasto:     {root}\nTietokanta:   {db_path}\nOsoite:       {url}", flush=True)
+    any_address = args.host in ("0.0.0.0", "::")
+    url = f"http://{'127.0.0.1' if any_address else host}:{args.port}/"
+    print(f"Kirjasto:     {root}\nTietokanta:   {db_path}\nOsoite:       {url}"
+          + ("  (kuuntelee kaikissa verkko-osoitteissa)" if any_address else ""), flush=True)
 
     def ready() -> None:
         if not args.no_browser:
-            browse = "127.0.0.1" if args.host in ("0.0.0.0", "::") else host
-            threading.Thread(target=webbrowser.open, args=(f"http://{browse}:{args.port}/",), daemon=True).start()
+            threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
 
-    app = create_app(root, db_path, workers=max(1, args.workers), on_ready=ready)
+    # requests must name this server in their Host header (DNS rebinding); any name when listening everywhere
+    allowed_hosts = ["*"] if any_address else [*LOOPBACK_HOSTS, host]
+    app = create_app(root, db_path, workers=max(1, args.workers), on_ready=ready, allowed_hosts=allowed_hosts)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0
 

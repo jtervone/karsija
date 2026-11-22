@@ -38,19 +38,43 @@ karsija serve ~/Kuvat --port 9000 --no-browser
 karsija serve --help                             # --host, --workers, --db
 ```
 
-The server binds `127.0.0.1` by default. Any other `--host` prints a warning: the server has no
-login, so anyone who can reach it can browse the library and record decisions.
+The browser UI is not there yet: the page it opens is a placeholder. Until it arrives, the server is used
+through its JSON API, which is listed and can be tried out at `/docs`. Analysis does not start on its own:
 
-It never writes into the library. Its state database lives at
-`~/.local/share/karsija/<hash>.sqlite` (`$XDG_DATA_HOME` is respected). `<hash>` is the first 16 hex
-digits of the SHA-256 of the resolved library root, so every library gets its own database. Use `--db`
-to choose another file. This database is separate from the `scan` command's `karsija.sqlite`.
+```sh
+curl -X POST localhost:8765/api/analyse -H 'Content-Type: application/json' -d '{"scope": "all"}'
+curl localhost:8765/api/library                  # events with shot counts; an event id also works as "scope"
+```
 
-Analysis runs in the background (`POST /api/analyse`), and progress is pushed over server-sent events
-(`/api/events/stream`). Unchanged shots are served from the database. Decisions (`PATCH /api/shots/{id}`,
-group accept) are stored in the database only, and `POST /api/decisions/undo` undoes the last one. The API is
-listed at `/docs` while the server runs. Only files inside the library root are served; `..`, absolute
-paths and symlinks that lead outside it are rejected.
+Progress is pushed over server-sent events (`/api/events/stream`) and can be polled at `/api/jobs/{id}`. A shot
+is analysed only once as long as its files do not change. The server has its own database, so the first analysis
+repeats the work even if `scan` has already analysed the library. An analysis that is still running when the
+server stops shows as failed after a restart; start it again.
+
+The server groups and judges with the default thresholds of `scan` (see `GET /api/settings`). The `scan`
+threshold flags do not apply to it, and the thresholds cannot be changed yet.
+
+Decisions:
+
+- `PATCH /api/shots/{id}` with `{"user_verdict": "keep" | "reject" | null, "rating": 0-5 | null}`
+- `POST /api/groups/{event_id}/{group_id}/accept` applies the suggested keep/reject to every shot of the group
+- `POST /api/decisions/undo` undoes the latest decision (a group accept counts as one); call it again to go
+  further back
+
+Decisions are stored in the server's database only. They are not written to XMP sidecars or used by
+`scan --move` yet. Every POST/PATCH must be sent with `Content-Type: application/json`, even without a body.
+
+The server binds `127.0.0.1` by default. Any `--host` that is not a loopback address (`localhost`,
+`127.0.0.0/8`, `::1`) prints a warning: the server has no login, so anyone who can reach it can browse the
+library and record decisions. Requests must name the server in their `Host` header and writes from other web sites
+are refused, so a web page open in the browser cannot use the server.
+
+The server never writes into the library. By default its state database lives at
+`~/.local/share/karsija/<hash>.sqlite` (`$XDG_DATA_HOME` is respected). `<hash>` is the first 16 hex digits of the
+SHA-256 of the resolved library root, so every library gets its own database. Use `--db` to choose another file.
+This database is separate from the `scan` command's `karsija.sqlite`. Only image files inside the library root
+are served; `..`, absolute paths and symlinks that lead outside it are rejected. Shots whose files have
+disappeared are left out of the event; if they come back, their decisions are still there.
 
 > Before the package, the tool was a single script run as `python karsija.py ROOT`.
 > The same flags now go after `karsija scan ROOT`.

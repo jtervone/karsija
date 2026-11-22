@@ -10,7 +10,7 @@ import pytest
 from conftest import EXIF_META, Library
 
 from karsija.analysis import DEFAULT_SETTINGS, Shot
-from karsija.store import SCHEMA_VERSION, UNSET, Store, default_db_path
+from karsija.store import SCHEMA, SCHEMA_VERSION, UNSET, Store, default_db_path
 
 
 def make_shot(path: Path) -> Shot:
@@ -154,12 +154,43 @@ def test_exif_roundtrip_and_backfill(tmp_path: Path, library: Library) -> None:
 
 def test_upgrade_from_schema_1(tmp_path: Path) -> None:
     path = tmp_path / "karsija.sqlite"
-    store = Store(path)
-    store.db.executescript("DROP TABLE decisions; DROP TABLE jobs; PRAGMA user_version = 1;")
-    store.close()
+    v1 = SCHEMA.replace("'moved', 'missing'", "'moved'")
+    v1 = v1[: v1.index("CREATE TABLE IF NOT EXISTS decisions")]
+    db = sqlite3.connect(path)
+    db.executescript(v1 + "PRAGMA user_version = 1;")
+    db.execute("INSERT INTO events (rel_path, year, name) VALUES ('2025/2025-06-01-test', 2025, '2025-06-01-test')")
+    db.execute("INSERT INTO shots (event_id, key, files, sig, user_verdict) VALUES (1, '/a.jpg', '[]', 's', 'keep')")
+    db.commit()
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute("UPDATE shots SET state = 'missing'")
+    db.close()
+
     store = Store(path)
     assert store.db.execute("PRAGMA user_version").fetchone() == (SCHEMA_VERSION,)
+    assert store.db.execute("SELECT key, user_verdict FROM shots").fetchall() == [("/a.jpg", "keep")]
+    store.mark_missing(1, set())
+    assert store.db.execute("SELECT state FROM shots").fetchone() == ("missing",)
     assert store.create_job("analyse", "all") == 1
+    assert store.db.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert {r[0] for r in store.db.execute("SELECT name FROM sqlite_master")} >= {"shots_event", "decisions", "jobs"}
+
+
+def test_mark_missing(tmp_path: Path) -> None:
+    store = Store(tmp_path / "karsija.sqlite")
+    event = store.event_id("2025/2025-06-01-test")
+    a, b, c = (make_shot(tmp_path / n) for n in ("a.jpg", "b.jpg", "c.jpg"))
+    for s in (a, b, c):
+        store.put(event, s, "sig")
+        s.group, s.verdict, s.reason = 1, "keep", ""
+    store.save_verdicts([a, b, c])
+    store.mark_moved([c.key])
+    state = lambda: store.db.execute("SELECT state, group_id, auto_verdict FROM shots ORDER BY id").fetchall()  # noqa: E731
+
+    store.mark_missing(event, {a.key})
+    assert state() == [("present", 1, "keep"), ("missing", None, None), ("moved", 1, "keep")]
+    assert [s.key for s in store.event_shots(event)] == [a.key]
+    store.mark_missing(event, {a.key, b.key})
+    assert state()[1] == ("present", None, None)
 
 
 def test_settings_in_effect(tmp_path: Path) -> None:

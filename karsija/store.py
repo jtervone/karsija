@@ -6,6 +6,10 @@ columns of ``shots`` (``user_verdict``, ``rating``, ``decided_at``) are written
 by the review server (``karsija serve``), every change also goes into
 ``decisions`` so it can be undone. ``jobs`` holds the progress of background
 analyses. The ``scan`` command writes neither.
+
+``shots.state``: ``present`` (in its event folder), ``moved`` (moved into the
+reject folder by ``scan --move``) or ``missing`` (gone from the folder when the
+server last analysed the event; it keeps its decisions in case it comes back).
 """
 
 from __future__ import annotations
@@ -54,7 +58,7 @@ CREATE TABLE IF NOT EXISTS shots (
     user_verdict TEXT CHECK (user_verdict IN ('keep', 'reject')),
     rating       INTEGER CHECK (rating BETWEEN 0 AND 5),
     decided_at   REAL,
-    state        TEXT NOT NULL DEFAULT 'present' CHECK (state IN ('present', 'moved'))
+    state        TEXT NOT NULL DEFAULT 'present' CHECK (state IN ('present', 'moved', 'missing'))
 );
 CREATE INDEX IF NOT EXISTS shots_event ON shots(event_id);
 CREATE TABLE IF NOT EXISTS settings (
@@ -111,9 +115,26 @@ class Store:
         if version > SCHEMA_VERSION:
             self.db.close()
             raise RuntimeError(f"{path}: tietokannan versio {version} on uudempi kuin tämä karsija ({SCHEMA_VERSION})")
+        if version == 1:
+            self._upgrade_from_1()
         self.db.executescript(SCHEMA)
         if version < SCHEMA_VERSION:
             self.db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+    def _upgrade_from_1(self) -> None:
+        """Schema 2 allows ``state = 'missing'``. SQLite cannot change a CHECK constraint, so the table is rebuilt."""
+        start = SCHEMA.index("CREATE TABLE IF NOT EXISTS shots")
+        create = SCHEMA[start:SCHEMA.index("CREATE INDEX IF NOT EXISTS shots_event")]
+        self.db.commit()
+        self.db.execute("PRAGMA foreign_keys = OFF")
+        self.db.executescript(f"""
+            BEGIN;
+            ALTER TABLE shots RENAME TO shots_v1;
+            {create}
+            INSERT INTO shots SELECT * FROM shots_v1;
+            DROP TABLE shots_v1;
+            COMMIT;""")
+        self.db.execute("PRAGMA foreign_keys = ON")
 
     @staticmethod
     def signature(files: list[str]) -> str:
@@ -179,6 +200,21 @@ class Store:
             (event_id,),
         ).fetchall()
         return [self._shot(r[0], r[1:]) for r in rows if keys is None or r[0] in keys]
+
+    def mark_missing(self, event_id: int, on_disk: set[str]) -> None:
+        """After scanning an event folder: shots not found are ``missing`` and lose their group and suggestion,
+        missing shots that are back are ``present`` again. Moved shots are left alone."""
+        rows = self.db.execute(
+            "SELECT key, state FROM shots WHERE event_id = ? AND state IN ('present', 'missing')", (event_id,)
+        ).fetchall()
+        self.db.executemany(
+            "UPDATE shots SET state = 'missing', group_id = NULL, auto_verdict = NULL, reason = NULL WHERE key = ?",
+            [(k,) for k, st in rows if st == "present" and k not in on_disk],
+        )
+        self.db.executemany(
+            "UPDATE shots SET state = 'present' WHERE key = ?",
+            [(k,) for k, st in rows if st == "missing" and k in on_disk],
+        )
 
     def save_verdicts(self, shots: list[Shot]) -> None:
         """Store group and automatic verdict of judged shots. Shots in no group (errors) get ``group_id`` NULL."""
