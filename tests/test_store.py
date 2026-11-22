@@ -7,9 +7,10 @@ from dataclasses import asdict
 from pathlib import Path
 
 import pytest
+from conftest import EXIF_META, Library
 
-from karsija.analysis import Shot
-from karsija.store import SCHEMA_VERSION, Store
+from karsija.analysis import DEFAULT_SETTINGS, Shot
+from karsija.store import SCHEMA_VERSION, UNSET, Store, default_db_path
 
 
 def make_shot(path: Path) -> Shot:
@@ -134,3 +135,84 @@ def test_import_legacy_cache(tmp_path: Path) -> None:
     assert store.get(inside.key, Store.signature(inside.files)) == inside
     assert store.get(outside.key, Store.signature(outside.files)) is None
     assert store.db.execute("SELECT rel_path FROM events").fetchall() == [("2025/2025-06-01-test",)]
+
+
+def test_exif_roundtrip_and_backfill(tmp_path: Path, library: Library) -> None:
+    store = Store(tmp_path / "karsija.sqlite")
+    src = library.path("sharp.jpg")
+    shot = Shot(key=str(src), files=[str(src)], exif={"iso": 400})
+    sig = Store.signature(shot.files)
+    store.put(store.event_id("2025/2025-06-01-test"), shot, sig)
+    assert store.get(shot.key, sig) == shot
+
+    # rows of schema 1 have no EXIF: it is read from the file on the next cache hit, without re-analysis
+    store.db.execute("UPDATE shots SET exif = NULL")
+    hit = store.get(shot.key, sig)
+    assert hit is not None and hit.exif == {**EXIF_META, "datetime_original": "2025:06:01 12:00:00"}
+    assert json.loads(store.db.execute("SELECT exif FROM shots").fetchone()[0]) == hit.exif
+
+
+def test_upgrade_from_schema_1(tmp_path: Path) -> None:
+    path = tmp_path / "karsija.sqlite"
+    store = Store(path)
+    store.db.executescript("DROP TABLE decisions; DROP TABLE jobs; PRAGMA user_version = 1;")
+    store.close()
+    store = Store(path)
+    assert store.db.execute("PRAGMA user_version").fetchone() == (SCHEMA_VERSION,)
+    assert store.create_job("analyse", "all") == 1
+
+
+def test_settings_in_effect(tmp_path: Path) -> None:
+    store = Store(tmp_path / "karsija.sqlite")
+    assert store.settings() == DEFAULT_SETTINGS
+    store.set_settings({"gap": 5.0})
+    assert store.settings() == {**DEFAULT_SETTINGS, "gap": 5.0}
+
+
+def test_decide_and_undo(tmp_path: Path) -> None:
+    store = Store(tmp_path / "karsija.sqlite")
+    event = store.event_id("2025/2025-06-01-test")
+    ids = []
+    for name in ("a.jpg", "b.jpg"):
+        store.put(event, make_shot(tmp_path / name), "sig")
+        ids.append(store.db.execute("SELECT id FROM shots WHERE key = ?", (str(tmp_path / name),)).fetchone()[0])
+    state = lambda: store.db.execute("SELECT user_verdict, rating FROM shots ORDER BY id").fetchall()  # noqa: E731
+
+    assert store.decide([(ids[0], "keep", 4)]) == 1
+    assert store.decide([(ids[0], "reject", UNSET), (ids[1], UNSET, 2)]) == 2
+    assert state() == [("reject", 4), (None, 2)]
+    assert store.undo() == (2, ids)
+    assert state() == [("keep", 4), (None, None)]
+    assert store.undo() == (1, [ids[0]])
+    assert state() == [(None, None), (None, None)]
+    assert store.db.execute("SELECT decided_at FROM shots WHERE decided_at IS NOT NULL").fetchall() == []
+    assert store.undo() == (None, [])
+
+
+def test_same_shot_twice_in_a_batch_undoes_to_the_first_state(tmp_path: Path) -> None:
+    store = Store(tmp_path / "karsija.sqlite")
+    store.put(store.event_id("2025/2025-06-01-test"), make_shot(tmp_path / "a.jpg"), "sig")
+    store.decide([(1, "keep", UNSET), (1, "reject", 1)])
+    store.undo()
+    assert store.db.execute("SELECT user_verdict, rating FROM shots").fetchone() == (None, None)
+
+
+def test_jobs(tmp_path: Path) -> None:
+    store = Store(tmp_path / "karsija.sqlite")
+    a, b = store.create_job("analyse", "all"), store.create_job("analyse", "3")
+    store.update_job(a, status="done", total=2, done=2, finished=1.0, ignored="x")
+    job = store.job(a)
+    assert job is not None and (job["status"], job["total"], job["done"]) == ("done", 2, 2)
+    store.fail_unfinished_jobs()
+    assert [store.job(i)["status"] for i in (a, b)] == ["done", "failed"]  # type: ignore[index]
+    assert store.job(99) is None
+
+
+def test_default_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    path = default_db_path(tmp_path / "lib")
+    assert path.parent == tmp_path / "data" / "karsija" and path.suffix == ".sqlite"
+    assert default_db_path(tmp_path / "lib" / ".." / "lib") == path
+    assert default_db_path(tmp_path / "other") != path
+    monkeypatch.delenv("XDG_DATA_HOME")
+    assert default_db_path(tmp_path / "lib").parent == Path.home() / ".local" / "share" / "karsija"

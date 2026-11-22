@@ -4,12 +4,16 @@ import csv
 import json
 import shutil
 import sqlite3
+import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 from conftest import BURST, EXPECTED, Library
+from fastapi.testclient import TestClient
 
 from karsija.cli import main
+from karsija.store import default_db_path
 
 
 def read_verdicts(report: Path) -> dict[str, str]:
@@ -99,4 +103,68 @@ def test_old_invocation_gets_a_hint(library: Library, capsys: pytest.CaptureFixt
 
 def test_scan_requires_existing_root(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["scan", str(tmp_path / "missing"), "--report", str(tmp_path / "r")]) == 1
+    assert "Kansiota ei löydy" in capsys.readouterr().err
+
+
+@pytest.fixture
+def fake_uvicorn(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Record uvicorn.run instead of starting a server; run the app's startup hook like uvicorn would."""
+    import uvicorn
+
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: calls.append({"app": app, **kw}))
+    return calls
+
+
+def test_serve_defaults(library: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                        fake_uvicorn: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    assert main(["serve", str(library.root), "--no-browser"]) == 0
+    (call,) = fake_uvicorn
+    assert (call["host"], call["port"]) == ("127.0.0.1", 8765)
+    assert call["app"].state.root == library.root.resolve()
+    assert call["app"].state.db_path == default_db_path(library.root)
+    assert call["app"].state.db_path.parent.is_dir()
+    out, err = capsys.readouterr()
+    assert "http://127.0.0.1:8765/" in out and err == ""
+    assert not any(library.root.rglob("*.sqlite"))           # nothing is written into the library
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.10", "::", "example.local"])
+def test_serve_warns_on_non_loopback_host(library: Library, tmp_path: Path, host: str,
+                                          fake_uvicorn: list[dict[str, Any]],
+                                          capsys: pytest.CaptureFixture[str]) -> None:
+    db = tmp_path / "db" / "k.sqlite"
+    assert main(["serve", str(library.root), "--host", host, "--port", "9000", "--no-browser", "--db", str(db)]) == 0
+    assert fake_uvicorn[0]["host"] == host and fake_uvicorn[0]["app"].state.db_path == db
+    assert "VAROITUS" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.2", "::1", "localhost"])
+def test_serve_loopback_hosts_do_not_warn(library: Library, tmp_path: Path, host: str,
+                                          fake_uvicorn: list[dict[str, Any]],
+                                          capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["serve", str(library.root), "--host", host, "--no-browser", "--db", str(tmp_path / "k.sqlite")]) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_serve_opens_browser_when_ready(library: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                        fake_uvicorn: list[dict[str, Any]]) -> None:
+    import webbrowser
+
+    opened: list[str] = []
+    monkeypatch.setattr(webbrowser, "open", opened.append)
+    assert main(["serve", str(library.root), "--port", "9001", "--db", str(tmp_path / "k.sqlite")]) == 0
+    assert opened == []                                       # not before the server is up
+    with TestClient(fake_uvicorn[0]["app"]):
+        pass
+    for _ in range(50):
+        if opened:
+            break
+        time.sleep(0.02)
+    assert opened == ["http://127.0.0.1:9001/"]
+
+
+def test_serve_requires_existing_root(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["serve", str(tmp_path / "missing")]) == 1
     assert "Kansiota ei löydy" in capsys.readouterr().err

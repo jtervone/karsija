@@ -1,4 +1,4 @@
-"""Command line interface: `karsija scan ROOT`."""
+"""Command line interface: `karsija scan ROOT`, `karsija serve ROOT`."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import argparse
 import concurrent.futures as cf
 import csv
 import html
+import ipaddress
 import os
 import re
 import sys
@@ -18,7 +19,7 @@ import cv2
 from karsija.actions import REJECT_DIR, move_rejects, write_xmp
 from karsija.analysis import Shot, analyse_file, group_shots, judge
 from karsija.library import JPEG_EXT, collect_shots, find_event_dirs, load_image
-from karsija.store import Store
+from karsija.store import Store, default_db_path
 
 
 # --------------------------------------------------------------------------- #
@@ -133,6 +134,10 @@ SCAN_EPILOG = ("Mitään ei poisteta. --write-xmp kirjoittaa XMP-sivutiedoston v
                f"--move siirtää karsitut tapahtumakansion {REJECT_DIR}-alikansioon, josta ne voi siirtää takaisin.")
 
 
+SERVE_EPILOG = ("Palvelin ei kirjoita kirjastoon mitään: päätökset ja analyysit tallentuvat tietokantaan "
+                "kirjaston ulkopuolelle.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="karsija", description="Kuvien karsinta-apu.")
     sub = ap.add_subparsers(dest="command", required=True)
@@ -156,12 +161,24 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--write-xmp", action="store_true", help="kirjoita arvio XMP-sivutiedostoon (ei ylikirjoita)")
     sc.add_argument("--move", default="", help="siirrä _karsitut-alikansioon: blurry,similar")
     sc.set_defaults(func=scan)
+
+    sv = sub.add_parser("serve", help="käynnistä selainkäyttöliittymän palvelin",
+                        description="Käynnistä karsijan palvelin ja avaa se selaimessa.", epilog=SERVE_EPILOG)
+    sv.add_argument("root", type=Path, help="kuvakirjaston juuri (sisältää YYYY-kansiot)")
+    sv.add_argument("--host", default="127.0.0.1", help="osoite jota kuunnellaan (oletus: vain tämä kone)")
+    sv.add_argument("--port", type=int, default=8765, help="portti (oletus: 8765)")
+    sv.add_argument("--no-browser", action="store_true", help="älä avaa selainta")
+    sv.add_argument("--workers", type=int, default=os.cpu_count() or 4,
+                    help="rinnakkaisten analyysiprosessien määrä (oletus: CPU-ytimien määrä)")
+    sv.add_argument("--db", type=Path, default=None,
+                    help="tietokanta (oletus: ~/.local/share/karsija/<juuren tiiviste>.sqlite)")
+    sv.set_defaults(func=serve)
     return ap
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    if argv and not argv[0].startswith("-") and argv[0] != "scan" and Path(argv[0]).expanduser().is_dir():
+    if argv and not argv[0].startswith("-") and argv[0] not in ("scan", "serve") and Path(argv[0]).expanduser().is_dir():
         # the old script took the library root as its first argument
         print(f"Käytä: karsija scan {argv[0]} ...", file=sys.stderr)
         return 2
@@ -224,6 +241,47 @@ def scan(args: argparse.Namespace) -> int:
     if move_kinds:
         print(f"Siirretty {moved} kuvaa {REJECT_DIR}-alikansioihin")
     print(f"Raportti: {html_path.resolve()}\nCSV:      {csv_path.resolve()}")
+    return 0
+
+
+def is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def serve(args: argparse.Namespace) -> int:
+    import threading
+    import webbrowser
+
+    import uvicorn
+
+    from karsija.server import create_app
+
+    root = args.root.expanduser().resolve()
+    if not root.is_dir():
+        print(f"Kansiota ei löydy: {root}", file=sys.stderr)
+        return 1
+    db_path = (args.db.expanduser() if args.db else default_db_path(root)).resolve()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    if not is_loopback(args.host):
+        print(f"VAROITUS: palvelin kuuntelee osoitteessa {args.host}. Kuka tahansa verkossa voi selata kirjastoa "
+              "ja tehdä päätöksiä; palvelimessa ei ole kirjautumista. Käytä vain luotetussa verkossa.",
+              file=sys.stderr)
+    host = f"[{args.host}]" if ":" in args.host else args.host
+    url = f"http://{host}:{args.port}/"
+    print(f"Kirjasto:     {root}\nTietokanta:   {db_path}\nOsoite:       {url}", flush=True)
+
+    def ready() -> None:
+        if not args.no_browser:
+            browse = "127.0.0.1" if args.host in ("0.0.0.0", "::") else host
+            threading.Thread(target=webbrowser.open, args=(f"http://{browse}:{args.port}/",), daemon=True).start()
+
+    app = create_app(root, db_path, workers=max(1, args.workers), on_ready=ready)
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0
 
 

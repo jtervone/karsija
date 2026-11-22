@@ -5,10 +5,12 @@ description = "Photo culling helper: finds blurry shots and picks the best of ea
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "fastapi>=0.115",
     "numpy>=1.26",
     "opencv-python-headless>=4.9",
     "pillow>=10.1",
     "rawpy>=0.19",
+    "uvicorn>=0.30",
 ]
 
 [project.scripts]
@@ -16,6 +18,7 @@ karsija = "karsija.cli:main"
 
 [dependency-groups]
 dev = [
+    "httpx>=0.27",
     "mypy>=1.11",
     "pytest>=8.0",
     "ruff>=0.6",
