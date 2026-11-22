@@ -187,7 +187,9 @@ def test_serve_any_address_prints_a_usable_url(library: Library, tmp_path: Path,
     monkeypatch.setattr(webbrowser, "open", opened.append)
     assert main(["serve", str(library.root), "--host", "0.0.0.0", "--port", "9002", "--db", str(tmp_path / "k")]) == 0
     assert "Osoite:       http://127.0.0.1:9002/  (kuuntelee kaikissa" in capsys.readouterr().out
-    assert allowed_hosts(fake_uvicorn[0]["app"]) == ["*"]
+    hosts = allowed_hosts(fake_uvicorn[0]["app"])
+    assert hosts[:3] == ["127.0.0.1", "localhost", "[::1]"] and socket.gethostname().lower() in hosts
+    assert "*" not in hosts
     with TestClient(fake_uvicorn[0]["app"]):
         pass
     for _ in range(50):
@@ -200,8 +202,38 @@ def test_serve_any_address_prints_a_usable_url(library: Library, tmp_path: Path,
 def test_serve_allows_its_own_host_name(library: Library, tmp_path: Path, fake_uvicorn: list[dict[str, Any]]) -> None:
     for host in ("::1", "192.168.1.10"):
         assert main(["serve", str(library.root), "--host", host, "--no-browser", "--db", str(tmp_path / "k")]) == 0
-    assert allowed_hosts(fake_uvicorn[0]["app"]) == ["127.0.0.1", "localhost", "[::1]", "[::1]"]
+    assert main(["serve", str(library.root), "--host", "192.168.1.10", "--allow-host", "Kone.local",
+                 "--allow-host", "fe80::1", "--no-browser", "--db", str(tmp_path / "k")]) == 0
+    assert allowed_hosts(fake_uvicorn[0]["app"]) == ["127.0.0.1", "localhost", "[::1]"]
     assert allowed_hosts(fake_uvicorn[1]["app"]) == ["127.0.0.1", "localhost", "[::1]", "192.168.1.10"]
+    assert allowed_hosts(fake_uvicorn[2]["app"]) == ["127.0.0.1", "localhost", "[::1]", "192.168.1.10", "kone.local",
+                                                     "[fe80::1]"]
+
+
+def test_serve_on_every_address_still_checks_host(library: Library, tmp_path: Path,
+                                                  fake_uvicorn: list[dict[str, Any]]) -> None:
+    """DNS rebinding: a page whose name resolves to this machine must not get in when listening on 0.0.0.0."""
+    for host in ("0.0.0.0", "::"):
+        assert main(["serve", str(library.root), "--host", host, "--no-browser", "--db", str(tmp_path / "k")]) == 0
+        with TestClient(fake_uvicorn[-1]["app"], base_url="http://attacker.example:8765") as client:
+            assert client.get("/api/library").status_code == 400
+            assert client.get("/api/library", headers={"Host": f"{socket.gethostname()}:8765"}).status_code == 200
+
+
+def test_serve_docs_flag(library: Library, tmp_path: Path, fake_uvicorn: list[dict[str, Any]]) -> None:
+    db = str(tmp_path / "k")
+    assert main(["serve", str(library.root), "--no-browser", "--db", db]) == 0
+    assert main(["serve", str(library.root), "--no-browser", "--db", db, "--docs"]) == 0
+    assert [c["app"].docs_url for c in fake_uvicorn] == [None, "/docs"]
+    assert {c["app"].redoc_url for c in fake_uvicorn} == {None}
+
+
+def test_serve_warns_without_event_folders(tmp_path: Path, fake_uvicorn: list[dict[str, Any]],
+                                           capsys: pytest.CaptureFixture[str]) -> None:
+    (tmp_path / "2025").mkdir()
+    assert main(["serve", str(tmp_path / "2025"), "--no-browser", "--db", str(tmp_path / "k")]) == 0
+    assert "VAROITUS: kansiossa ei ole YYYY/YYYY-MM-DD* -kansioita" in capsys.readouterr().err
+    assert len(fake_uvicorn) == 1                                 # a warning only: folders may still be added
 
 
 def test_serve_busy_port(library: Library, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

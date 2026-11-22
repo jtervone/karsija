@@ -173,7 +173,13 @@ def build_parser() -> argparse.ArgumentParser:
     sv.add_argument("--workers", type=int, default=os.cpu_count() or 4,
                     help="rinnakkaisten analyysiprosessien määrä (oletus: CPU-ytimien määrä)")
     sv.add_argument("--db", type=Path, default=None,
-                    help="tietokanta (oletus: ~/.local/share/karsija/<juuren tiiviste>.sqlite)")
+                    help="tietokanta (oletus: $XDG_DATA_HOME/karsija/<juuren tiiviste>.sqlite, "
+                         "ilman muuttujaa ~/.local/share/karsija/...)")
+    sv.add_argument("--allow-host", action="append", default=[], metavar="NIMI",
+                    help="hyväksy myös tämä palvelimen nimi selaimen osoitteessa (esim. kone.local); "
+                         "voi antaa useasti")
+    sv.add_argument("--docs", action="store_true",
+                    help="rajapinnan kokeilusivu osoitteeseen /docs (lataa Swagger UI:n cdn.jsdelivr.net:stä)")
     sv.set_defaults(func=serve)
     return ap
 
@@ -255,6 +261,29 @@ def is_loopback(host: str) -> bool:
         return False
 
 
+def bracket(host: str) -> str:
+    """IPv6 addresses appear in brackets in a Host header."""
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
+def own_host_names() -> list[str]:
+    """Names and addresses this machine is reached by, for a server listening on every address."""
+    names = [socket.gethostname(), socket.getfqdn()]
+    names += [f"{n}.local" for n in names[:1] if "." not in n]          # mDNS
+    try:
+        names += [str(a[4][0]) for a in socket.getaddrinfo(socket.gethostname(), None)]
+    except OSError:
+        pass
+    for family, probe in ((socket.AF_INET, "192.0.2.1"), (socket.AF_INET6, "2001:db8::1")):
+        try:        # the address of the default route; connect() on UDP sends nothing
+            with socket.socket(family, socket.SOCK_DGRAM) as s:
+                s.connect((probe, 9))
+                names.append(str(s.getsockname()[0]))
+        except OSError:
+            pass
+    return [bracket(n.split("%")[0]) for n in names if n]
+
+
 def bind_error(host: str, port: int) -> str:
     """Why the server could not listen on host:port, or "" if it can. Checked before uvicorn starts, which would
     otherwise fail with its own English log line after the address has been printed."""
@@ -281,6 +310,8 @@ def serve(args: argparse.Namespace) -> int:
     if not root.is_dir():
         print(f"Kansiota ei löydy: {root}", file=sys.stderr)
         return 1
+    if not find_event_dirs(root):
+        print("VAROITUS: kansiossa ei ole YYYY/YYYY-MM-DD* -kansioita; anna kirjaston juuri.", file=sys.stderr)
     db_path = (args.db.expanduser() if args.db else default_db_path(root)).resolve()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     if not is_loopback(args.host):
@@ -300,9 +331,11 @@ def serve(args: argparse.Namespace) -> int:
         if not args.no_browser:
             threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
 
-    # requests must name this server in their Host header (DNS rebinding); any name when listening everywhere
-    allowed_hosts = ["*"] if any_address else [*LOOPBACK_HOSTS, host]
-    app = create_app(root, db_path, workers=max(1, args.workers), on_ready=ready, allowed_hosts=allowed_hosts)
+    # requests must name this server in their Host header (DNS rebinding)
+    allowed_hosts = [*LOOPBACK_HOSTS, *(own_host_names() if any_address else [host]),
+                     *(bracket(h) for h in args.allow_host)]
+    app = create_app(root, db_path, workers=max(1, args.workers), on_ready=ready,
+                     allowed_hosts=list(dict.fromkeys(h.lower() for h in allowed_hosts)), docs=args.docs)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0
 

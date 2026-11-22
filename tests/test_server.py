@@ -208,24 +208,36 @@ def test_group_accept_is_undone_as_one_batch(clean: Server) -> None:
     client, shots = clean.client, clean.shots()
     burst = {n: shots[n] for n in BURST}
     best = next(n for n, s in burst.items() if s["auto_verdict"] == "best")
-    other = next(n for n in BURST if n != best)
+    other = next(n for n in BURST if n != best)        # suggested "similar", kept by hand
     client.patch(f"/api/shots/{burst[other]['id']}", json={"user_verdict": "keep", "rating": 3})
+    client.patch(f"/api/shots/{burst[best]['id']}", json={"rating": 5})
+    undecided = set(BURST) - {other}
 
     resp = client.post(f"/api/groups/{clean.event_id}/{burst[best]['group_id']}/accept", headers=JSON)
     assert resp.status_code == 200
     after = {s["name"]: s for s in resp.json()["shots"]}
-    assert set(after) == set(BURST)
-    assert {n: s["user_verdict"] for n, s in after.items()} == {n: "keep" if n == best else "reject" for n in BURST}
-    assert after[other]["rating"] == 3                 # accept sets the verdict only
+    assert set(after) == undecided                     # the decision made by hand is left alone
+    assert {n: s["user_verdict"] for n, s in after.items()} == {n: "keep" if n == best else "reject" for n in after}
+    assert after[best]["rating"] == 5                  # accept sets the verdict only
+    assert clean.shots()[other]["user_verdict"] == "keep"
 
     client.patch(f"/api/shots/{shots['sharp.jpg']['id']}", json={"user_verdict": "keep"})
     assert [s["name"] for s in client.post("/api/decisions/undo", headers=JSON).json()["shots"]] == ["sharp.jpg"]
 
     undone = {s["name"]: s for s in client.post("/api/decisions/undo", headers=JSON).json()["shots"]}
-    assert set(undone) == set(BURST)                   # the whole group in one step
+    assert set(undone) == undecided                    # the whole group in one step
     now = clean.shots()
     assert {n: (now[n]["user_verdict"], now[n]["rating"]) for n in BURST} == {
-        n: ("keep", 3) if n == other else (None, None) for n in BURST}
+        n: ("keep", 3) if n == other else (None, 5) if n == best else (None, None) for n in BURST}
+
+
+def test_group_accept_with_everything_decided(clean: Server) -> None:
+    shots = clean.shots()
+    for n in BURST:
+        clean.client.patch(f"/api/shots/{shots[n]['id']}", json={"user_verdict": "keep"})
+    resp = clean.client.post(f"/api/groups/{clean.event_id}/{shots[BURST[0]]['group_id']}/accept", headers=JSON)
+    assert resp.json() == {"batch": None, "shots": []}
+    assert {clean.shots()[n]["user_verdict"] for n in BURST} == {"keep"}
 
 
 def test_group_accept_unknown_group(clean: Server) -> None:
@@ -348,7 +360,7 @@ def test_snapshot_is_taken_after_subscribing() -> None:
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("method, path, body", [
     ("POST", "/api/decisions/undo", None),
-    ("POST", "/api/groups/{event}/1/accept", None),
+    ("POST", "/api/groups/{event}/{group}/accept", None),
     ("PATCH", "/api/shots/{shot}", {"user_verdict": "reject"}),
     ("POST", "/api/analyse", {"scope": "all"}),
 ])
@@ -356,7 +368,7 @@ def test_writes_from_other_sites_are_refused(clean: Server, method: str, path: s
     client = clean.client
     shot_id = clean.shots()["sharp.jpg"]["id"]
     client.patch(f"/api/shots/{shot_id}", json={"user_verdict": "keep"})
-    url = path.format(event=clean.event_id, shot=shot_id)
+    url = path.format(event=clean.event_id, shot=shot_id, group=clean.shots()[BURST[0]]["group_id"])
     before = clean.shots()
 
     for origin in ("http://evil.example", "null", "http://127.0.0.1:9999", "https://127.0.0.1:8765"):
@@ -395,13 +407,116 @@ def test_host_name() -> None:
     assert host_name("") == ""
 
 
-def test_any_host_when_allowed(tmp_path: Path) -> None:
+def test_foreign_host_error_says_what_to_do(tmp_path: Path) -> None:
     root = tmp_path / "lib"
     (root / "2025").mkdir(parents=True)
-    with TestClient(create_app(root, tmp_path / "k.sqlite", allowed_hosts=["*"])) as client:   # Host: testserver
-        assert client.get("/api/library").status_code == 200
-    with TestClient(create_app(root, tmp_path / "k.sqlite", allowed_hosts=LOOPBACK_HOSTS)) as client:
-        assert client.get("/api/library").status_code == 400
+    with TestClient(create_app(root, tmp_path / "k.sqlite", allowed_hosts=[*LOOPBACK_HOSTS, "kone.local"])) as client:
+        assert client.get("/api/library").status_code == 400                     # Host: testserver
+        assert client.get("/api/library", headers={"Host": "kone.local:8765"}).status_code == 200
+        detail = client.get("/api/library", headers={"Host": "mypc:8765"}).json()["detail"]
+    assert detail == ('tuntematon Host-otsake "mypc"; käytä osoitetta 127.0.0.1 tai [::1] tai kone.local tai '
+                      "localhost tai käynnistä palvelin valitsimella --allow-host mypc")
+
+
+def test_same_origin_bodyless_writes_need_no_content_type(clean: Server) -> None:
+    """What Swagger UI at /docs sends for accept and undo: no body, no Content-Type, its own Origin."""
+    client, shots = clean.client, clean.shots()
+    group = shots[BURST[0]]["group_id"]
+    resp = client.post(f"/api/groups/{clean.event_id}/{group}/accept", headers={"Origin": BASE})
+    assert resp.status_code == 200 and len(resp.json()["shots"]) == 5
+    assert client.post("/api/decisions/undo", headers={"Origin": BASE}).json()["batch"] == resp.json()["batch"]
+    # without an Origin (curl, or an old browser posting a form) the content type is still required
+    assert client.post("/api/decisions/undo").status_code == 415
+    assert client.post("/api/decisions/undo", headers={"Origin": "http://evil.example"}).status_code == 403
+    assert client.post("/api/decisions/undo", headers={"Origin": BASE, "Content-Type": "text/plain"},
+                       content=b"x").status_code == 415
+
+
+def test_docs_are_off_by_default(server: Server, tmp_path: Path) -> None:
+    assert server.client.get("/docs").status_code == 404
+    assert server.client.get("/redoc").status_code == 404
+    root = tmp_path / "lib"
+    (root / "2025").mkdir(parents=True)
+    with TestClient(create_app(root, tmp_path / "k.sqlite", docs=True), base_url=BASE) as client:
+        assert client.get("/docs").status_code == 200 and "swagger" in client.get("/docs").text.lower()
+        assert client.get("/redoc").status_code == 404
+
+
+def test_files_are_not_sniffed(server: Server) -> None:
+    resp = server.client.get(f"/api/files/{EVENT.as_posix()}/sharp.jpg")
+    assert resp.headers["x-content-type-options"] == "nosniff"
+    assert resp.headers["content-type"] == "image/jpeg" and resp.headers["content-disposition"].startswith("inline")
+    raw = server.client.get(f"/api/files/{EVENT.as_posix()}/DSC_0100.NEF")
+    assert raw.status_code == 200 and raw.headers["content-type"] == "application/octet-stream"
+    assert raw.headers["x-content-type-options"] == "nosniff"
+
+
+def test_repeated_analyse_returns_the_pending_job(own: Server, monkeypatch: pytest.MonkeyPatch) -> None:
+    release = threading.Event()
+    collect = server_mod.collect_shots
+
+    def slow_collect(folder: Path) -> list[tuple[str, list[str]]]:
+        release.wait(30)
+        return collect(folder)
+
+    monkeypatch.setattr(server_mod, "collect_shots", slow_collect)
+    try:
+        first = own.client.post("/api/analyse", json={"scope": own.event_id})
+        again = own.client.post("/api/analyse", json={"scope": own.event_id})
+        other = own.client.post("/api/analyse", json={"scope": "all"})
+        assert (first.status_code, again.status_code, other.status_code) == (202, 200, 202)
+        assert again.json()["job_id"] == first.json()["job_id"] != other.json()["job_id"]
+    finally:
+        release.set()
+    for resp in (first, other):
+        assert wait_for_job(own.client, resp.json()["job_id"])["status"] == "done"
+
+
+def test_decisions_get_through_while_an_analysis_scans(own: Server, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The job must not hold the write lock while it walks the library."""
+    scanning, release = threading.Event(), threading.Event()
+    collect = server_mod.collect_shots
+
+    def blocking_collect(folder: Path) -> list[tuple[str, list[str]]]:
+        scanning.set()
+        release.wait(30)
+        return collect(folder)
+
+    monkeypatch.setattr(server_mod, "collect_shots", blocking_collect)
+    monkeypatch.setattr(server_mod.Store, "__init__", _short_timeout(server_mod.Store.__init__))
+    shot_id = own.shots()["sharp.jpg"]["id"]
+    try:
+        job_id = own.client.post("/api/analyse", json={"scope": "all"}).json()["job_id"]
+        assert scanning.wait(30)
+        resp = own.client.patch(f"/api/shots/{shot_id}", json={"user_verdict": "keep"})
+        assert resp.status_code == 200
+        assert own.client.get("/api/library").status_code == 200
+    finally:
+        release.set()
+    assert wait_for_job(own.client, job_id)["status"] == "done"
+    assert own.shots()["sharp.jpg"]["user_verdict"] == "keep"
+
+
+def _short_timeout(init: Any) -> Any:
+    """Store.__init__ with a 1 s lock timeout, so a held lock fails the test quickly instead of after 30 s."""
+    def wrapped(self: Store, path: Path | str) -> None:
+        init(self, path)
+        self.db.execute("PRAGMA busy_timeout = 1000")
+    return wrapped
+
+
+def test_failed_commit_is_an_error(own: Server, monkeypatch: pytest.MonkeyPatch) -> None:
+    shot_id = own.shots()["sharp.jpg"]["id"]
+
+    def fail(self: Store) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(Store, "commit", fail)
+    client = TestClient(own.app, base_url=BASE, raise_server_exceptions=False)
+    resp = client.patch(f"/api/shots/{shot_id}", json={"user_verdict": "keep"})
+    assert resp.status_code == 500
+    monkeypatch.undo()
+    assert own.shots()["sharp.jpg"]["user_verdict"] is None
 
 
 # --------------------------------------------------------------------------- #
@@ -474,7 +589,7 @@ def test_broken_pool_is_replaced(own: Server, monkeypatch: pytest.MonkeyPatch) -
     (own.root / EVENT / "sharp.jpg").touch()                     # new mtime: analysed again
     monkeypatch.setattr(server_mod, "analyse_file", crash)
     job = analyse(own)
-    assert job["status"] == "failed" and job["error"].startswith("BrokenProcessPool")
+    assert (job["status"], job["error"]) == ("failed", "analyysiprosessi kaatui; yritä uudelleen")
     assert published[-1]["status"] == "failed" and published[-1]["error"] == job["error"]
     assert runner._pool is None
 
@@ -490,4 +605,4 @@ def test_job_for_a_deleted_event_fails_clearly(own: Server) -> None:
     own.app.state.runner.run(job_id, "999")
     job = store.job(job_id)
     store.close()
-    assert job is not None and (job["status"], job["error"]) == ("failed", "LookupError: tapahtumaa ei ole")
+    assert job is not None and (job["status"], job["error"]) == ("failed", "tapahtumaa ei ole")

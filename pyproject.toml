@@ -5,7 +5,7 @@ description = "Photo culling helper: finds blurry shots and picks the best of ea
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.115",
+    "fastapi>=0.121",
     "numpy>=1.26",
     "opencv-python-headless>=4.9",
     "pillow>=10.1",

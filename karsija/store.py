@@ -5,7 +5,8 @@ The store doubles as the analysis cache: a shot is re-analysed only when its
 columns of ``shots`` (``user_verdict``, ``rating``, ``decided_at``) are written
 by the review server (``karsija serve``), every change also goes into
 ``decisions`` so it can be undone. ``jobs`` holds the progress of background
-analyses. The ``scan`` command writes neither.
+analyses. The ``scan`` command writes neither. ``settings`` overrides
+``analysis.DEFAULT_SETTINGS`` for the server; nothing writes it yet.
 
 ``shots.state``: ``present`` (in its event folder), ``moved`` (moved into the
 reject folder by ``scan --move``) or ``missing`` (gone from the folder when the

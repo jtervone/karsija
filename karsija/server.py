@@ -102,6 +102,17 @@ def sync_events(store: Store, root: Path) -> list[tuple[int, Path]]:
     return out
 
 
+def job_error(e: Exception) -> str:
+    """Message of a failed job: plain Finnish for the expected failures, the exception otherwise."""
+    if isinstance(e, BrokenProcessPool):
+        return "analyysiprosessi kaatui; yritä uudelleen"
+    if isinstance(e, UnsafePath):
+        return "tapahtuman kansio ei ole kirjastossa"
+    if isinstance(e, LookupError):
+        return str(e.args[0]) if e.args else "ei löydy"
+    return f"{type(e).__name__}: {e}"
+
+
 class JobRunner:
     """Runs analysis jobs one at a time in a thread; the image work goes to a process pool."""
 
@@ -141,6 +152,7 @@ class JobRunner:
             self._publish(store, job_id, status="running", started=time.time())
             if scope == "all":
                 events = sync_events(store, self.root)
+                store.commit()          # never hold the write lock across the scan: decisions must get through
             else:
                 row = store.db.execute("SELECT rel_path FROM events WHERE id = ?", (int(scope),)).fetchone()
                 if row is None:
@@ -160,9 +172,10 @@ class JobRunner:
                     sig = Store.signature(files)
                     if store.get(primary, sig) is None:       # cache hit by signature skips the work
                         todo.append((event_id, primary, files, sig))
-            for event_id, keys in on_disk.items():
-                store.mark_missing(event_id, keys)
-            store.commit()                                    # get() may also have stored EXIF of old rows
+                    elif store.db.in_transaction:
+                        store.commit()                        # get() stored the EXIF of an old row
+                store.mark_missing(event_id, on_disk[event_id])
+                store.commit()
             self._publish(store, job_id, total=len(todo))
 
             if todo:
@@ -187,7 +200,7 @@ class JobRunner:
                 self._pool.shutdown(wait=False, cancel_futures=True)
                 self._pool = None
             store.db.rollback()
-            self._publish(store, job_id, status="failed", error=f"{type(e).__name__}: {e}", finished=time.time())
+            self._publish(store, job_id, status="failed", error=job_error(e), finished=time.time())
         finally:
             store.close()
 
@@ -239,9 +252,11 @@ class RequestGuard:
 
     - ``Host`` must be one of ``allowed_hosts``: a DNS-rebinding page (``Host: attacker.example``) cannot read
       the library.
-    - Writes (POST, PUT, PATCH, DELETE) must be ``Content-Type: application/json``, which a cross-site form or
-      ``no-cors`` fetch cannot send without a CORS preflight (and the server allows no cross-origin requests), and
-      an ``Origin`` header, when present, must be the server's own.
+    - Writes (POST, PUT, PATCH, DELETE): an ``Origin`` header, when present, must be the server's own, and the
+      request must be ``Content-Type: application/json``, which a cross-site form or ``no-cors`` fetch cannot send
+      without a CORS preflight (the server allows no cross-origin requests). A write without a body may leave the
+      content type out when it comes from the server's own origin (Swagger UI at ``/docs`` does so for
+      ``.../accept`` and ``.../undo``): browsers always send ``Origin`` with a POST from another site.
     """
 
     def __init__(self, app: ASGIApp, allowed_hosts: Collection[str]):
@@ -255,13 +270,19 @@ class RequestGuard:
         headers = Headers(scope=scope)
         host = headers.get("host", "")
         response: Response | None = None
-        if "*" not in self.allowed_hosts and host_name(host) not in self.allowed_hosts:
-            response = JSONResponse({"detail": "tuntematon Host-otsake"}, 400)
+        if host_name(host) not in self.allowed_hosts:
+            name = host_name(host)
+            response = JSONResponse({"detail": f'tuntematon Host-otsake "{name}"; käytä osoitetta '
+                                               f'{" tai ".join(sorted(self.allowed_hosts))} tai käynnistä '
+                                               f'palvelin valitsimella --allow-host {name or "NIMI"}'}, 400)
         elif scope["method"] in WRITE_METHODS:
             origin = headers.get("origin")
-            if origin is not None and origin.lower() != f"{scope['scheme']}://{host}".lower():
+            own = origin is not None and origin.lower() == f"{scope['scheme']}://{host}".lower()
+            bodyless = headers.get("content-length", "0") == "0" and "transfer-encoding" not in headers
+            if origin is not None and not own:
                 response = JSONResponse({"detail": "pyyntö toiselta sivustolta"}, 403)
-            elif headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
+            elif headers.get("content-type", "").split(";")[0].strip().lower() != "application/json" \
+                    and not (own and bodyless):
                 response = JSONResponse({"detail": "vaatii Content-Type: application/json"}, 415)
         if response is not None:
             await response(scope, receive, send)
@@ -273,7 +294,8 @@ class RequestGuard:
 # App
 # --------------------------------------------------------------------------- #
 def get_store(request: Request) -> Iterator[Store]:
-    """One connection per request, committed when the handler succeeds."""
+    """One connection per request, committed when the handler succeeds and before the response is sent (the
+    dependency has function scope), so a failed commit is a 500, not a success that was not stored."""
     store = Store(request.app.state.db_path)
     try:
         yield store
@@ -282,12 +304,16 @@ def get_store(request: Request) -> Iterator[Store]:
         store.close()
 
 
-Db = Annotated[Store, Depends(get_store)]
+Db = Annotated[Store, Depends(get_store, scope="function")]
 
 
 def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[], None] | None = None,
-               allowed_hosts: Collection[str] = LOOPBACK_HOSTS) -> FastAPI:
-    """``allowed_hosts``: accepted ``Host`` header names (``"*"`` = any), see ``RequestGuard``."""
+               allowed_hosts: Collection[str] = LOOPBACK_HOSTS, docs: bool = False) -> FastAPI:
+    """``allowed_hosts``: accepted ``Host`` header names, see ``RequestGuard``.
+
+    ``docs`` turns on Swagger UI at ``/docs``. It loads its scripts from cdn.jsdelivr.net into the server's origin,
+    so it is off unless asked for. ReDoc is always off.
+    """
     root = root.resolve()
     broker = Broker()
     runner = JobRunner(root, db_path, workers, broker)
@@ -304,7 +330,7 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
         yield
         runner.stop()
 
-    app = FastAPI(title="karsija", lifespan=lifespan)
+    app = FastAPI(title="karsija", lifespan=lifespan, docs_url="/docs" if docs else None, redoc_url=None)
     app.add_middleware(RequestGuard, allowed_hosts=allowed_hosts)
     app.state.root, app.state.db_path, app.state.runner, app.state.broker = root, db_path, runner, broker
 
@@ -359,10 +385,17 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
         return {"root": str(root), "years": [{"year": y, "events": evs} for y, evs in years.items()]}
 
     @app.post("/api/analyse", status_code=202)
-    def analyse(body: AnalyseRequest, store: Db) -> dict[str, Any]:
+    def analyse(body: AnalyseRequest, store: Db, response: Response) -> dict[str, Any]:
+        """Start an analysis (202). If one with the same scope is already queued or running, return it (200)."""
         if body.scope != "all" and store.db.execute("SELECT 1 FROM events WHERE id = ?", (body.scope,)).fetchone() \
                 is None:
             raise HTTPException(404, "tapahtumaa ei ole")
+        pending = store.db.execute(
+            "SELECT id FROM jobs WHERE kind = 'analyse' AND scope = ? AND status IN ('queued', 'running') "
+            "ORDER BY id LIMIT 1", (str(body.scope),)).fetchone()
+        if pending:
+            response.status_code = 200
+            return {"job_id": pending[0], "job": store.job(pending[0])}
         job_id = store.create_job("analyse", str(body.scope))
         store.commit()
         runner.submit(job_id, str(body.scope))
@@ -430,13 +463,20 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
 
     @app.post("/api/groups/{event_id}/{group_id}/accept")
     def accept_group(event_id: int, group_id: int, store: Db) -> dict[str, Any]:
+        """Accept the suggested keep/reject for the shots of the group that have no decision yet.
+
+        Shots already decided keep their decision. ``batch`` is null when nothing was left to decide.
+        """
         rows = store.db.execute(
-            "SELECT id, auto_verdict FROM shots WHERE event_id = ? AND group_id = ? AND state = 'present'",
+            "SELECT id, auto_verdict, user_verdict FROM shots "
+            "WHERE event_id = ? AND group_id = ? AND state = 'present'",
             (event_id, group_id),
         ).fetchall()
-        changes = [(sid, SUGGESTION[v], UNSET) for sid, v in rows if v in SUGGESTION]
-        if not changes:
+        if not rows:
             raise HTTPException(404, "ryhmää ei ole")
+        changes = [(sid, SUGGESTION[v], UNSET) for sid, v, decided in rows if v in SUGGESTION and decided is None]
+        if not changes:
+            return {"batch": None, "shots": []}
         batch = store.decide(changes)
         return {"batch": batch, "shots": shots_by_id(store, [c[0] for c in changes])}
 
@@ -458,7 +498,9 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
             raise HTTPException(403, "polku ei ole kirjastossa") from None
         if p.suffix.lower() not in JPEG_EXT | RAW_EXT or not p.is_file():
             raise HTTPException(404, "tiedostoa ei ole")
-        return FileResponse(p)
+        media_type = "application/octet-stream" if p.suffix.lower() in RAW_EXT else None
+        return FileResponse(p, media_type=media_type, filename=p.name, content_disposition_type="inline",
+                            headers={"X-Content-Type-Options": "nosniff"})
 
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app
