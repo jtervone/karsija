@@ -9,7 +9,9 @@ import shutil
 import tempfile
 import threading
 import xml.etree.ElementTree as ET
+from collections.abc import Iterable
 from pathlib import Path
+from xml.sax.saxutils import quoteattr
 
 from karsija.analysis import Shot
 
@@ -17,6 +19,7 @@ REJECT_DIR = "_karsitut"
 
 RATING = {"best": 5, "keep": 3, "similar": 1, "blurry": -1}
 LABEL = {"best": "Green", "keep": "", "similar": "Yellow", "blurry": "Red"}
+OWN_LABELS = {v for v in LABEL.values() if v}      # the only labels an empty label removes
 
 X_NS = "adobe:ns:meta/"
 RDF_NS = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
@@ -36,7 +39,8 @@ NEW_XMP = f"""<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>
 # the XML declaration, processing instructions (xpacket), comments and a doctype before the root element
 _PROLOG_ITEM = re.compile(r"\s*(?:<\?.*?\?>|<!--.*?-->|<!DOCTYPE[^>]*>)", re.DOTALL)
 _ROOT_NAME = re.compile(r"<([^\s/>]+)")
-# ElementTree keeps its prefix map in a module global, so prefixes are registered and used under a lock
+# ElementTree keeps its prefix map in a module global, so prefixes are registered and used under a lock. The
+# registrations stay for the whole process; every sidecar re-registers the prefixes it declares before it is written.
 _NS_LOCK = threading.Lock()
 
 
@@ -47,8 +51,9 @@ class XmpError(Exception):
 def xmp_values(verdict: str, user_verdict: str | None = None, user_rating: int | None = None) -> tuple[int, str] | None:
     """Rating and label for a shot: the user's reject, else the user's rating, else from the verdict.
 
-    A user keep turns a rejected verdict into ``keep``. None when there is nothing to write
-    (an ``error`` shot without user decisions).
+    A user keep turns a rejected verdict into ``keep``. A user rating changes only the rating, the label still
+    follows the verdict (it marks karsija's judgement, the stars are the user's). None when there is nothing to
+    write (an ``error`` shot without user decisions).
     """
     if user_verdict == "reject":
         return RATING["blurry"], LABEL["blurry"]
@@ -61,32 +66,50 @@ def xmp_values(verdict: str, user_verdict: str | None = None, user_rating: int |
     return RATING[verdict], LABEL[verdict]
 
 
-def sidecars(path: str | Path) -> list[Path]:
-    """Existing sidecars of an image (darktable ``name.ext.xmp``, digiKam/Lightroom ``name.xmp``), else ``name.xmp``."""
+def sidecars(path: str | Path, files: Iterable[str | Path] = ()) -> list[Path]:
+    """Existing sidecars of an image (darktable ``name.ext.xmp``, digiKam/Lightroom ``name.xmp``), else ``name.xmp``.
+
+    ``files`` are the other files of the same shot (the JPEG of a RAW+JPEG pair); their darktable sidecars count too.
+    """
     p = Path(path)
-    candidates = list(dict.fromkeys([p.with_name(p.name + ".xmp"), p.with_suffix(".xmp")]))
-    return [c for c in candidates if c.exists()] or [p.with_suffix(".xmp")]
+    others = [Path(f) for f in files]
+    candidates = [p.with_name(p.name + ".xmp"), p.with_suffix(".xmp"), *(f.with_name(f.name + ".xmp") for f in others)]
+    return [c for c in dict.fromkeys(candidates) if c.exists()] or [p.with_suffix(".xmp")]
 
 
-def xmp_set(path: str | Path, rating: int, label: str) -> dict[Path, str | None]:
-    """Write ``xmp:Rating`` and ``xmp:Label`` into every sidecar of the image ``path``.
+def xmp_set(path: str | Path, rating: int, label: str, files: Iterable[str | Path] = ()) -> dict[Path, str | None]:
+    """Write ``xmp:Rating`` and ``xmp:Label`` into every sidecar of the image ``path`` (and of ``files``).
 
-    Existing sidecars are merged into: only Rating and Label change (an empty ``label`` removes
-    ``xmp:Label``), everything else and the text around the root element stay. Without a sidecar
-    ``name.xmp`` is created. Returns each sidecar's previous content, None for a created one.
-    Raises XmpError, before anything is written, if a sidecar is not valid XMP.
+    Existing sidecars are merged into: only Rating and Label change, everything else and the text around
+    the root element stay. An empty ``label`` removes ``xmp:Label`` only when it is one karsija writes
+    (OWN_LABELS); a label of the user's own stays. Without a sidecar ``name.xmp`` is created.
+    Returns the previous content of each sidecar that changed, None for a created one; a sidecar that
+    already has the values is not rewritten. Raises XmpError, before anything is written, if a sidecar
+    is not valid XMP. On OSError the sidecars already written are put back before it is raised.
     """
     old: dict[Path, str | None] = {}
     new: dict[Path, str] = {}
-    for sidecar in sidecars(path):
+    for sidecar in sidecars(path, files):
         prev = _read(sidecar) if sidecar.exists() else None
         try:
-            new[sidecar] = _merge(NEW_XMP if prev is None else prev, rating, label)
+            text = _merge(NEW_XMP if prev is None else prev, rating, label)
         except XmpError as e:
             raise XmpError(f"{sidecar}: {e}") from None
-        old[sidecar] = prev
-    for sidecar, text in new.items():
-        _write_atomic(sidecar, text)
+        if text != prev:
+            new[sidecar], old[sidecar] = text, prev
+    written: list[Path] = []
+    try:
+        for sidecar, text in new.items():
+            _write_atomic(sidecar, text)
+            written.append(sidecar)
+    except OSError:
+        for sidecar in written:
+            prev = old[sidecar]
+            if prev is None:
+                sidecar.unlink(missing_ok=True)
+            else:
+                _write_atomic(sidecar, prev)
+        raise
     return old
 
 
@@ -118,7 +141,7 @@ def _merge(text: str, rating: int, label: str) -> str:
 
     descriptions = _descriptions(root)
     _set_property(descriptions, "Rating", str(rating))
-    _set_property(descriptions, "Label", label or None)
+    _set_property(descriptions, "Label", label or None, removable=OWN_LABELS)
 
     with _NS_LOCK:
         for prefix, uri in [*BASE_NAMESPACES.items(), *namespaces]:
@@ -127,11 +150,18 @@ def _merge(text: str, rating: int, label: str) -> str:
         out = ET.tostring(root, encoding="unicode")
     # ElementTree declares only the namespaces in use, at the root; keep the unused ones too
     declared = {prefix for _, (prefix, _) in ET.iterparse(io.StringIO(out), events=("start-ns",))}
-    missing = "".join(f' xmlns:{p}="{u}"' for p, u in dict(namespaces).items()
+    missing = "".join(f" xmlns:{p}={quoteattr(u)}" for p, u in dict(namespaces).items()
                       if p and p not in declared and not re.fullmatch(r"ns\d+", p))
     if missing:
         at = _ROOT_NAME.match(out).end()  # type: ignore[union-attr]
         out = out[:at] + missing + out[at:]
+    try:
+        ET.fromstring(out)                  # never write what the next reader cannot parse
+    except ET.ParseError as e:
+        raise XmpError(f"yhdistetty XMP ei ole kelvollista XML:ää ({e})") from None
+    if "\r\n" in body:
+        # expat turns CRLF into LF; newlines inside attribute values are escaped, so this is only layout
+        out = out.replace("\n", "\r\n")
     return text[:start] + out + text[end:]
 
 
@@ -145,21 +175,28 @@ def _descriptions(root: ET.Element) -> list[ET.Element]:
         ET.SubElement(rdf, f"{{{RDF_NS}}}Description", {f"{{{RDF_NS}}}about": ""})]
 
 
-def _set_property(descriptions: list[ET.Element], name: str, value: str | None) -> None:
-    """Set (None: remove) xmp:name wherever it is, as an attribute or a child element; add it as an attribute."""
+def _set_property(descriptions: list[ET.Element], name: str, value: str | None,
+                  removable: Iterable[str] | None = None) -> None:
+    """Set xmp:name wherever it is, as an attribute or a child element; add it as an attribute.
+
+    None removes it, but only where its value is in ``removable`` (when given).
+    """
     tag = f"{{{XMP_NS}}}{name}"
+    removable_values = set() if removable is None else {"", *removable}
     found = False
     for desc in descriptions:
         if tag in desc.attrib:
             found = True
-            if value is None:
-                del desc.attrib[tag]
-            else:
+            if value is not None:
                 desc.set(tag, value)
+            elif removable is None or desc.attrib[tag].strip() in removable_values:
+                del desc.attrib[tag]
         for child in desc.findall(tag):
             found = True
             if value is not None:
                 child.text = value
+                continue
+            if removable is not None and (child.text or "").strip() not in removable_values:
                 continue
             i = list(desc).index(child)
             if i:

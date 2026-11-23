@@ -83,8 +83,9 @@ def test_scan_write_xmp_merges(library: Library, tmp_path: Path, capsys: pytest.
     assert main(["scan", str(root), "--report", str(report), "--workers", "2", "--write-xmp"]) == 0
 
     captured = capsys.readouterr()
-    assert "XMP: 9 kuvaa kirjoitettu, 1 virheellistä jätetty ennalleen" in captured.out
-    assert "motion.xmp" in captured.err
+    assert "XMP: 1 kuvan arvio päivitetty olemassa oleviin sivutiedostoihin, 8 uutta sivutiedostoa, 0 ennallaan, " \
+           "1 epäonnistui (ks. virheet yllä)" in captured.out
+    assert "motion.xmp" in captured.err and "Korjaa tai siirrä" in captured.err
     assert (event / "motion.xmp").read_text(encoding="utf-8") == "<x:xmpmeta"
     merged = (event / "DSC_0100.NEF.xmp").read_text(encoding="utf-8")
     assert 'xmp:Rating="3"' in merged and "xmp:Label" not in merged and "rawprepare" in merged

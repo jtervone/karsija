@@ -7,11 +7,15 @@ inside each event folder, picks the best of each group and writes an HTML review
 **Nothing is ever deleted.** Optional actions:
 
 - `--write-xmp` writes rating and label (`xmp:Rating`, `xmp:Label`) to the XMP sidecars: every existing
-  `name.ext.xmp` (darktable) and `name.xmp` (digiKam, Lightroom) is updated in place, keeping all its other
-  data (edit history, tags, face regions); `name.xmp` is created when there is none. best = 5 / Green,
-  keep = 3, similar = 1 / Yellow, blurry = -1 / Red. A sidecar that is not valid XMP is left untouched and
-  reported. The other data survives, but the file is re-serialised, so its layout (line breaks between
-  attributes, where namespaces are declared) can change.
+  `name.xmp` (digiKam, Lightroom) and `name.ext.xmp` (darktable, also for the JPEG of a RAW+JPEG pair) is
+  updated in place, keeping all its other data (edit history, tags, face regions); `name.xmp` is created when
+  there is none. best = 5 / Green, keep = 3, similar = 1 / Yellow, blurry = -1 / Red. **A rating or colour
+  label already set in darktable, digiKam or Lightroom is overwritten.** For keep, an existing label is removed
+  only if it is one karsija writes (Green, Yellow, Red); other labels stay. A sidecar that already has the values
+  is not rewritten. If a sidecar is not valid XMP, none of that photo's sidecars is changed and the photo is
+  reported; if a sidecar cannot be written, the photo's sidecars already written are put back. The other data
+  survives, but the file is re-serialised, so its layout (line breaks between attributes, where namespaces are
+  declared) can change.
 - `--move blurry,similar` moves rejects into the event folder's `_karsitut/` subfolder, together
   with their RAW/JPEG pair and XMP sidecars. Move them back to undo.
 

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from karsija import actions
 from karsija.actions import REJECT_DIR, XMP_NS, XmpError, move_rejects, xmp_set, xmp_values
 from karsija.analysis import Shot
 
@@ -138,6 +139,70 @@ def test_xmp_set_creates_and_updates_both_styles(tmp_path: Path) -> None:
         assert rating_label((tmp_path / name).read_text(encoding="utf-8")) == [("1", "Yellow")]
 
 
+def test_xmp_set_keeps_users_own_label(tmp_path: Path) -> None:
+    sidecar = tmp_path / "a.xmp"
+    sidecar.write_text(ELEMENT_FORM.replace("Blue", "Purple"), encoding="utf-8")
+    xmp_set(tmp_path / "a.nef", 3, "")
+    assert rating_label(sidecar.read_text(encoding="utf-8")) == [("3", "Purple")]
+
+
+def test_xmp_set_skips_unchanged(tmp_path: Path) -> None:
+    sidecar = tmp_path / "a.xmp"
+    xmp_set(tmp_path / "a.nef", 5, "Green")
+    os.utime(sidecar, (1_000_000, 1_000_000))
+    assert xmp_set(tmp_path / "a.nef", 5, "Green") == {}
+    assert sidecar.stat().st_mtime == 1_000_000
+
+
+def test_xmp_set_updates_pair_sidecars(tmp_path: Path) -> None:
+    jpeg_sidecar = tmp_path / "a.jpg.xmp"
+    shutil.copy(FIXTURES / "darktable.nef.xmp", jpeg_sidecar)
+    old = xmp_set(tmp_path / "a.nef", -1, "Red", files=[tmp_path / "a.jpg", tmp_path / "a.nef"])
+    assert list(old) == [jpeg_sidecar]                      # no name.xmp created: the shot has a sidecar
+    assert rating_label(jpeg_sidecar.read_text(encoding="utf-8")) == [("-1", "Red")]
+
+
+def test_xmp_set_escapes_kept_namespaces(tmp_path: Path) -> None:
+    sidecar = tmp_path / "a.xmp"
+    sidecar.write_text(ELEMENT_FORM.replace('xmlns:dc=', """xmlns:u='a"b&amp;c&lt;' xmlns:dc="""), encoding="utf-8")
+    xmp_set(tmp_path / "a.nef", 5, "Green")
+    after = sidecar.read_text(encoding="utf-8")
+    assert ("u", 'a"b&c<') in namespaces(after)
+    assert rating_label(after) == [("5", "Green")]
+
+
+def test_xmp_set_keeps_crlf(tmp_path: Path) -> None:
+    sidecar = tmp_path / "a.xmp"
+    data = (FIXTURES / "digikam.xmp").read_bytes().replace(b"\n", b"\r\n")
+    sidecar.write_bytes(data)
+    xmp_set(tmp_path / "a.nef", 5, "Green")
+    after = sidecar.read_bytes()
+    assert b"\n" not in after.replace(b"\r\n", b"")
+    text = after.decode("utf-8")
+    assert without_rating_label(parse(text)) == without_rating_label(parse(data.decode("utf-8")))
+    assert text.endswith(" \r\n" + '<?xpacket end="w"?>')
+
+
+def test_xmp_set_rolls_back_partial_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    shutil.copy(FIXTURES / "darktable.nef.xmp", tmp_path / "a.nef.xmp")
+    shutil.copy(FIXTURES / "digikam.xmp", tmp_path / "a.xmp")
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    real = actions._write_atomic
+    calls: list[Path] = []
+
+    def failing(path: Path, text: str) -> None:
+        calls.append(path)
+        if len(calls) == 2:
+            raise OSError(28, "No space left on device")
+        real(path, text)
+
+    monkeypatch.setattr(actions, "_write_atomic", failing)
+    with pytest.raises(OSError):
+        xmp_set(tmp_path / "a.nef", 5, "Green")
+    assert len(calls) == 3                                    # the first one was written and then put back
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == before
+
+
 @pytest.mark.parametrize("content", ["<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF>", "not xml at all", "",
                                      "<x:xmpmeta xmlns:x='adobe:ns:meta/'/>", b"\xff\xfe<x"])
 def test_xmp_set_malformed_left_untouched(tmp_path: Path, content: str | bytes) -> None:
@@ -162,6 +227,7 @@ def test_xmp_values() -> None:
     assert xmp_values("blurry", "keep") == (3, "")
     assert xmp_values("best", "keep") == (5, "Green")
     assert xmp_values("similar", None, 4) == (4, "Yellow")
+    assert xmp_values("blurry", None, 5) == (5, "Red")      # the label follows the verdict, the stars the user
     assert xmp_values("best", None, 0) == (0, "Green")
     assert xmp_values("error", "keep", 2) == (2, "")
 
