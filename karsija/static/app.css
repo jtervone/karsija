@@ -330,3 +330,36 @@ kbd {
 @media (max-width: 24rem) {
   .events tr { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* Asetukset: the thresholds beside the event's sharpness histogram */
+.settings-panel {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: .5rem 1rem .8rem;
+  margin-top: .8rem;
+}
+.settings-panel > header { display: flex; align-items: baseline; gap: .8rem; }
+.settings-panel h2 { margin: 0; font-size: 1.1rem; }
+.settings-panel .dismiss { margin-left: auto; padding: 0 .5rem; }
+.settings-body { display: flex; flex-wrap: wrap; gap: 1rem 2rem; margin-top: .5rem; }
+.sharpness { margin: 0; flex: 1 1 24rem; max-width: 36rem; min-width: 0; }
+.sharpness svg { display: block; width: 100%; height: auto; }
+.sharpness figcaption { font-size: .85rem; margin-top: .3rem; }
+.sharpness .bar { fill: var(--muted); }
+.sharpness .bar.under { fill: var(--blurry); }
+.sharpness .axis { stroke: var(--line); }
+.sharpness .tick { fill: var(--muted); font-size: .75rem; }
+.sharpness .median { stroke: var(--text); stroke-width: 1; stroke-dasharray: 1 3; opacity: .6; }
+.sharpness .limit line { stroke: var(--text); stroke-width: 2; }
+.sharpness .limit.rel line { stroke-dasharray: 5 3; }
+.sharpness .limit text { fill: var(--text); font-size: .75rem; }
+.sharpness .under-count { color: var(--blurry); }
+.sliders { flex: 1 1 20rem; display: flex; flex-direction: column; gap: .35rem; font-size: .9rem; }
+.sliders label { display: grid; grid-template-columns: minmax(7rem, 12rem) minmax(6rem, 1fr) 3.5rem; align-items: center; gap: .6rem; }
+.sliders output { text-align: right; font-variant-numeric: tabular-nums; }
+.sliders output.changed { color: var(--similar); }
+.sliders .buttons { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .4rem; }
+.sliders .note { margin: .2rem 0 0; font-size: .85rem; }
+.toolbar-actions button[aria-pressed="true"] { border-color: var(--muted); background: var(--line); }
+@media (max-width: 40rem) {
+  .sliders label { grid-template-columns: minmax(0, 1fr) 3.5rem; row-gap: .1rem; }
+  .sliders label > span { grid-column: 1 / -1; }
+}

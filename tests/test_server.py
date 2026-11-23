@@ -133,7 +133,8 @@ def test_event_groups_and_verdicts(server: Server) -> None:
     assert len(data["groups"]) == 6                    # 5 single shots + the burst
     assert all(s["reason"] is not None for s in shots.values())
     assert shots["DSC_0100.NEF"]["files"] == [f"{EVENT.as_posix()}/DSC_0100.JPG", f"{EVENT.as_posix()}/DSC_0100.NEF"]
-    assert len(data["sharpness"]) == 10 and data["median_sharp"] > 0
+    assert len(data["sharpness"]) == 10 and data["sharpness"] == sorted(data["sharpness"])
+    assert data["median_sharp"] == (data["sharpness"][4] + data["sharpness"][5]) / 2     # as judge() takes it
     assert data["settings"]["hamming"] == 40
 
 
@@ -788,3 +789,93 @@ def test_failed_analysis_keeps_analysed_at(own: Server, monkeypatch: pytest.Monk
     assert analyse(own, "all")["status"] == "failed"
     after = {ev["name"]: ev["analysed_at"] for ev in own.client.get("/api/library").json()["years"][0]["events"]}
     assert after == before and before["2025-08-01-empty"] is None
+
+
+def test_settings_change_rejudges_from_stored_metrics(own: Server, monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_analysis(*args: Any) -> None:
+        raise AssertionError("analyse_file called")
+
+    monkeypatch.setattr(server_mod, "analyse_file", no_analysis)
+    resp = own.client.put("/api/settings", json={"gap": 0.1}, headers=JSON)    # burst frames are 0.3 s apart
+    assert resp.status_code == 200
+    assert resp.json() == {"settings": {**own.client.get("/api/settings").json()}, "events": 1}
+    assert resp.json()["settings"]["gap"] == 0.1
+    data = own.client.get(f"/api/events/{own.event_id}").json()
+    assert data["settings"]["gap"] == 0.1 and data["default_settings"]["gap"] == 3.0
+    assert len(data["groups"]) == 10
+    assert {s["auto_verdict"] for g in data["groups"] for s in g["shots"] if s["name"] in BURST} == {"keep"}
+    ev = own.client.get("/api/library").json()["years"][0]["events"][0]
+    assert ev["candidates"] == 2                                  # motion and defocus only
+
+    # every shot below the absolute threshold: all blurry
+    own.client.put("/api/settings", json={"abs_blur": 1e5}, headers=JSON)
+    assert {s["auto_verdict"] for s in own.shots().values()} == {"blurry"}
+    assert own.client.get("/api/library").json()["years"][0]["events"][0]["candidates"] == 10
+
+    # null puts the default back; the original verdicts return
+    resp = own.client.put("/api/settings", json={"gap": None, "abs_blur": None}, headers=JSON)
+    assert resp.json()["settings"] == {"gap": 3.0, "hamming": 40, "abs_blur": 10.0, "rel_blur": 0.25, "sim_keep": 0.0}
+    assert {n: s["auto_verdict"] for n, s in own.shots().items() if n in EXPECTED} == EXPECTED
+    assert own.client.get("/api/library").json()["years"][0]["events"][0]["candidates"] == 6
+
+    # the default's value (Oletukset in the UI) also follows the default: nothing stays stored
+    own.client.put("/api/settings", json={"hamming": 20, "rel_blur": 0.5}, headers=JSON)
+    own.client.put("/api/settings", json={"hamming": 40, "rel_blur": 0.25}, headers=JSON)
+    store = Store(own.db)
+    assert store.get_settings() == {}
+    store.close()
+
+
+def test_decisions_survive_a_rejudge(own: Server) -> None:
+    shots = own.shots()
+    best = next(n for n in BURST if shots[n]["auto_verdict"] == "best")
+    similar = next(n for n in BURST if shots[n]["auto_verdict"] == "similar")
+    own.client.patch(f"/api/shots/{shots[best]['id']}", json={"user_verdict": "reject"}, headers=JSON)
+    own.client.patch(f"/api/shots/{shots[similar]['id']}", json={"user_verdict": "keep", "rating": 4}, headers=JSON)
+    before = {n: (s["user_verdict"], s["rating"], s["decided_at"]) for n, s in own.shots().items()}
+
+    own.client.put("/api/settings", json={"gap": 0.1}, headers=JSON)
+    after = own.shots()
+    assert after[best]["group_id"] != after[similar]["group_id"]  # their group split under the decisions
+    assert after[similar]["auto_verdict"] == "keep"
+    assert {n: (s["user_verdict"], s["rating"], s["decided_at"]) for n, s in after.items()} == before
+    # the undo stack is untouched too: the last decision is still the one undone
+    undone = own.client.post("/api/decisions/undo", headers=JSON).json()["shots"]
+    assert [(s["name"], s["user_verdict"], s["rating"]) for s in undone] == [(similar, None, None)]
+
+
+@pytest.mark.parametrize("body", [{}, {"blur": 1}, {"hamming": 300}, {"hamming": 1.5}, {"rel_blur": 2},
+                                  {"abs_blur": -1}, {"abs_blur": 1e7}, {"gap": -0.5}, {"sim_keep": 1.1}])
+def test_settings_are_validated(server: Server, body: dict[str, Any]) -> None:
+    assert server.client.put("/api/settings", json=body, headers=JSON).status_code == 422
+    assert server.client.get("/api/settings").json()["hamming"] == 40
+
+
+def test_settings_change_needs_json(server: Server) -> None:
+    resp = server.client.put("/api/settings", content='{"gap": 1}', headers={"Content-Type": "text/plain"})
+    assert resp.status_code == 415
+
+
+def test_settings_change_waits_for_a_judging_job(own: Server, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A job judges under the write lock: a settings change made meanwhile waits, and its verdicts are the last."""
+    judge = server_mod.group_and_judge
+    judging, release = threading.Event(), threading.Event()
+
+    def slow(shots: Any, settings: Any) -> None:
+        if threading.current_thread().name == "karsija-jobs":     # the job, not the request's re-judge
+            judging.set()
+            release.wait(10)
+        judge(shots, settings)
+
+    monkeypatch.setattr(server_mod, "group_and_judge", slow)
+    job_id = own.client.post("/api/analyse", json={"scope": own.event_id}).json()["job_id"]
+    assert judging.wait(10)
+    put = threading.Thread(target=lambda: own.client.put("/api/settings", json={"gap": 0.1}, headers=JSON))
+    put.start()
+    time.sleep(0.3)
+    assert put.is_alive()                                         # waits for the job's lock
+    release.set()
+    put.join(10)
+    assert not put.is_alive()
+    assert wait_for_job(own.client, job_id)["status"] == "done"
+    assert {s["auto_verdict"] for n, s in own.shots().items() if n in BURST} == {"keep"}    # gap 0.1, not 3

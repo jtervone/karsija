@@ -15,7 +15,7 @@ export const SHORTCUTS = [
   ['C', 'vertaile ryhmän kuvia'],
   ['Z', 'suurenna hiiren kohdalta (100 %, HiDPI-näytöllä 200 %) / sovita (kuvanäkymässä; vertailussa kaikki '
     + 'kuvat samasta kohdasta); myös klikkaus'],
-  ['Esc', 'takaisin ruudukkoon; ruudukossa sulkee ilmoituksen'],
+  ['Esc', 'takaisin ruudukkoon; ruudukossa sulkee ilmoituksen, sitten Asetukset'],
   ['Ctrl+Z', 'kumoa viimeisin tallennettu päätös (myös toisessa tapahtumassa tai aiemmin tehty)'],
   ['?', 'näytä tai piilota pikanäppäimet'],
 ];

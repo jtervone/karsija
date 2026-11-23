@@ -12,6 +12,7 @@ import json
 import multiprocessing
 import queue
 import sqlite3
+import statistics
 import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Iterator, Sequence
@@ -29,7 +30,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from karsija import apply as applies
 from karsija import previews
-from karsija.analysis import Shot, analyse_file, group_and_judge
+from karsija.analysis import DEFAULT_SETTINGS, Shot, analyse_file, group_and_judge
 from karsija.library import (
     JPEG_EXT,
     RAW_EXT,
@@ -115,6 +116,17 @@ def sync_events(store: Store, root: Path) -> list[tuple[int, Path]]:
             continue
         out.append((store.event_id(rel), path))
     return out
+
+
+def rejudge(store: Store, settings: dict[str, float]) -> int:
+    """Group and judge again every analysed event from its stored metrics, no image analysis. User decisions are
+    not touched. Returns the number of events."""
+    event_ids = store.analysed_events()
+    for event_id in event_ids:
+        shots = store.event_shots(event_id)
+        group_and_judge(shots, settings)
+        store.save_verdicts(shots)
+    return len(event_ids)
 
 
 def etag_matches(if_none_match: str, etag: str) -> bool:
@@ -210,6 +222,7 @@ class JobRunner:
                     store.put(eid, fut.result(), sig)
                     self._publish(store, job_id, done=done)
 
+            store.begin_write()         # a settings change waits, or has already re-judged: no stale verdicts
             settings = store.settings()
             for event_id, keys in on_disk.items():
                 shots = store.event_shots(event_id, keys)
@@ -247,6 +260,17 @@ class AnalyseRequest(BaseModel):
 class ApplyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     confirm_token: str
+
+
+class SettingsRequest(BaseModel):
+    """Thresholds to change; a field left out keeps its value, ``null`` (or the default value) puts back its
+    default."""
+    model_config = ConfigDict(extra="forbid")
+    abs_blur: float | None = Field(default=None, ge=0, le=1e6, allow_inf_nan=False)
+    rel_blur: float | None = Field(default=None, ge=0, le=1)
+    gap: float | None = Field(default=None, ge=0, le=3600)
+    hamming: int | None = Field(default=None, ge=0, le=256)
+    sim_keep: float | None = Field(default=None, ge=0, le=1)
 
 
 class DecisionRequest(BaseModel):
@@ -485,7 +509,8 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
         return {
             "event": summary[0],
             "settings": store.settings(),
-            "median_sharp": sharp[len(sharp) // 2] if sharp else None,
+            "default_settings": DEFAULT_SETTINGS,
+            "median_sharp": statistics.median(sharp) if sharp else None,   # as judge() takes it
             "sharpness": sharp,                 # histogram data
             "groups": [{"group_id": gid, "shots": shots} for gid, shots in groups.items()],
         }
@@ -639,6 +664,23 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
     @app.get("/api/settings")
     def settings(store: Db) -> dict[str, float]:
         return store.settings()
+
+    @app.put("/api/settings")
+    def put_settings(body: SettingsRequest, store: Db) -> dict[str, Any]:
+        """Store thresholds and re-group and re-judge every analysed event from its stored metrics (no image
+        analysis). User decisions stay as they are, also on shots whose group or verdict changed. Returns the
+        ``settings`` in effect and how many ``events`` were judged again."""
+        if not body.model_fields_set:
+            raise HTTPException(422, "anna ainakin yksi asetus")
+        with apply_lock:                # an apply's plan must not change between its check and its run
+            store.begin_write()
+            # a value equal to its default follows the default, also if a later version changes it
+            store.set_settings({k: None if getattr(body, k) == DEFAULT_SETTINGS[k] else getattr(body, k)
+                                for k in body.model_fields_set})
+            settings = store.settings()
+            events = rejudge(store, settings)
+            store.commit()
+        return {"settings": settings, "events": events}
 
     @app.get("/api/files/{path:path}")
     def file(path: str) -> FileResponse:

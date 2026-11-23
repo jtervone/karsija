@@ -7,7 +7,7 @@ by the review server (``karsija serve``), every change also goes into
 ``decisions`` so it can be undone, until an apply carries the decision out in
 the library and takes its rows off (``forget_decisions``). ``jobs`` holds the progress of background
 analyses. The ``scan`` command writes neither. ``settings`` overrides
-``analysis.DEFAULT_SETTINGS`` for the server; nothing writes it yet.
+``analysis.DEFAULT_SETTINGS`` for the server; ``PUT /api/settings`` writes it.
 
 ``events.analysed_at``: when a server analysis that covered the event last finished, NULL if none has, 0 if one
 has but its time is not known (events judged before schema 3 without a finished job to tell).
@@ -280,6 +280,10 @@ class Store:
             [(s.group if s.group >= 0 else None, s.verdict, s.reason, s.key) for s in shots],
         )
 
+    def analysed_events(self) -> list[int]:
+        """Events a server analysis has covered (``analysed_at`` set)."""
+        return [r[0] for r in self.db.execute("SELECT id FROM events WHERE analysed_at IS NOT NULL ORDER BY id")]
+
     def mark_analysed(self, event_ids: Collection[int], when: float) -> None:
         self.db.executemany("UPDATE events SET analysed_at = ? WHERE id = ?", [(when, i) for i in event_ids])
 
@@ -323,11 +327,13 @@ class Store:
         stored = self.get_settings()
         return {k: stored.get(k, v) for k, v in DEFAULT_SETTINGS.items()}
 
-    def set_settings(self, values: dict[str, float]) -> None:
+    def set_settings(self, values: dict[str, float | None]) -> None:
+        """Store settings; ``None`` removes the stored value, so the default applies again."""
         self.db.executemany(
             "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-            [(k, json.dumps(v)) for k, v in values.items()],
+            [(k, json.dumps(v)) for k, v in values.items() if v is not None],
         )
+        self.db.executemany("DELETE FROM settings WHERE key = ?", [(k,) for k, v in values.items() if v is None])
 
     # ----------------------------------------------------------------------- #
     # Decisions
@@ -337,7 +343,7 @@ class Store:
 
         Returns the batch number.
         """
-        self._begin_write()
+        self.begin_write()
         now = time.time()
         batch = int(self.db.execute("SELECT COALESCE(MAX(batch), 0) + 1 FROM decisions").fetchone()[0])
         for shot_id, verdict, rating in changes:
@@ -358,14 +364,15 @@ class Store:
             )
         return batch
 
-    def _begin_write(self) -> None:
-        """Take the write lock now, so concurrent requests cannot read the same last batch."""
+    def begin_write(self) -> None:
+        """Take the write lock now, so that what is read next cannot change before the transaction commits (e.g.
+        two requests reading the same last batch, or a job judging with settings a request is changing)."""
         if not self.db.in_transaction:
             self.db.execute("BEGIN IMMEDIATE")
 
     def undo(self) -> tuple[int | None, list[int]]:
         """Undo the last decision batch. Returns the batch number and the ids of the shots restored."""
-        self._begin_write()
+        self.begin_write()
         row = self.db.execute("SELECT MAX(batch) FROM decisions").fetchone()
         if row[0] is None:
             return None, []

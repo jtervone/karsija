@@ -5,6 +5,7 @@ import { Grid, groupBest } from './grid.js';
 import { ShortcutHelp, useKeys } from './keys.js';
 import { Loupe } from './loupe.js';
 import { CANDIDATE, Order, filterGroups, useReview } from './review.js';
+import { SettingsPanel } from './settings.js';
 import { fmt, html, preload, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from './ui.js';
 
 const TITLES = { event: 'Tapahtuma', loupe: 'Kuva', compare: 'Vertailu' };
@@ -91,7 +92,8 @@ function Counts({ ev, shots }) {
 export function EventView({ route, version: jobsVersion }) {
   const eventId = route.event;
   const [applied, setApplied] = useState(0);     // grows when an apply or restore may have changed the event
-  const version = jobsVersion + applied;
+  const [rejudged, setRejudged] = useState(0);   // grows when new settings have judged the event again
+  const version = jobsVersion + applied + rejudged;
   const review = useReview(eventId, version, applied);
   const { data, groups, shots } = review;
   const [filters, setFilters] = useState({ candidates: false, groups: false, unreviewed: false });
@@ -99,11 +101,17 @@ export function EventView({ route, version: jobsVersion }) {
   const [help, setHelp] = useState(false);
   const [applying, setApplying] = useState(false);
   const [applyRunning, setApplyRunning] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const changed = useCallback(() => setApplied((n) => n + 1), []);
   const undoHint = useRef(false);        // the next Ctrl+Z explains that it does not undo the apply just made
   const applyDone = useCallback((text) => {
     undoHint.current = true;
     review.notify(text);
+  }, [review.notify]);
+  const settingsApplied = useCallback(({ events }) => {
+    setRejudged((n) => n + 1);           // decisions and their undo stay: only the verdicts and groups changed
+    review.notify(`Asetukset tallennettu; ${fmt(events)} ${events === 1 ? 'tapahtuma' : 'tapahtumaa'} arvioitu `
+      + 'uudelleen.');
   }, [review.notify]);
 
   useEffect(() => { setCursor(null); setApplying(false); undoHint.current = false; }, [eventId]);
@@ -221,7 +229,8 @@ export function EventView({ route, version: jobsVersion }) {
       else if (review.failure || review.notice) {
         review.dismiss();
         review.notify(null);
-      } else return false;
+      } else if (settingsOpen) setSettingsOpen(false);
+      else return false;
       return true;
     }
     if (action.type === 'zoom') return route.view !== 'event' && viewKeys.current ? viewKeys.current(action) : false;
@@ -310,6 +319,9 @@ export function EventView({ route, version: jobsVersion }) {
           <input type="checkbox" checked=${filters[key]} onChange=${() => toggle(key)} /> ${label}</label>`)}
       </div>`}
       <span class="toolbar-actions">
+        ${route.view === 'event' && ev && html`<button aria-pressed=${settingsOpen}
+          onClick=${() => setSettingsOpen((o) => !o)} title="Ryhmittelyn ja arvioinnin rajat, terävyysjakauma">
+          Asetukset</button>`}
         ${route.view === 'event' && ev && shots.size > 0 && html`<button
           onClick=${() => setApplying(true)} title="Siirrä hylätyt kuvat karsittuihin ja kirjoita päätökset XMP:hen">
           Toteuta</button>`}
@@ -325,6 +337,8 @@ export function EventView({ route, version: jobsVersion }) {
     </header>
     ${review.error && !data && html`<p class="error">Tapahtumaa ei voi ladata: ${review.error}</p>`}
     ${!data && !review.error && html`<p class="muted">Ladataan…</p>`}
+    ${data && route.view === 'event' && html`<${SettingsPanel} data=${data} hidden=${!settingsOpen}
+      onApplied=${settingsApplied} onClose=${() => setSettingsOpen(false)} />`}
     ${data && route.view === 'event' && (shots.size === 0
       ? html`<p class="muted">${ev.analysed_at == null
         ? html`Tapahtumaa ei ole analysoitu. Analysoi se <a href="#/">Kirjastossa</a>.`

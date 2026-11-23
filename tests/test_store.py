@@ -316,3 +316,11 @@ def test_default_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     assert default_db_path(tmp_path / "other") != path
     monkeypatch.delenv("XDG_DATA_HOME")
     assert default_db_path(tmp_path / "lib").parent == Path.home() / ".local" / "share" / "karsija"
+
+
+def test_settings_cleared_back_to_default(tmp_path: Path) -> None:
+    store = Store(tmp_path / "k.sqlite")
+    store.set_settings({"gap": 5.0, "hamming": 20})
+    store.set_settings({"gap": None})
+    assert store.get_settings() == {"hamming": 20}
+    assert store.settings() == {**DEFAULT_SETTINGS, "hamming": 20}
