@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="XMP Core 4.4.0-Exiv2">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:exif="http://ns.adobe.com/exif/1.0/"
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+    xmlns:xmpMM="http://ns.adobe.com/xap/1.0/mm/"
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+    xmlns:lr="http://ns.adobe.com/lightroom/1.0/"
+    xmlns:darktable="http://darktable.sf.net/"
+   exif:DateTimeOriginal="2025:06:21 14:03:12.40"
+   xmp:Rating="1"
+   xmpMM:DerivedFrom="DSC_4711.NEF"
+   darktable:import_timestamp="63886927392000000"
+   darktable:change_timestamp="63886927811000000"
+   darktable:export_timestamp="-1"
+   darktable:print_timestamp="-1"
+   darktable:xmp_version="5"
+   darktable:raw_params="0"
+   darktable:auto_presets_applied="1"
+   darktable:history_end="3"
+   darktable:iop_order_version="4"
+   darktable:history_basic_hash="e06a5b2e2a4b0dbf44e3ab0d3bd4c0e7"
+   darktable:history_current_hash="0d1b8be0b8c0ce4a6fbd1c3e7d8d0a01">
+   <dc:subject>
+    <rdf:Bag>
+     <rdf:li>juhannus</rdf:li>
+     <rdf:li>Hanko</rdf:li>
+    </rdf:Bag>
+   </dc:subject>
+   <lr:hierarchicalSubject>
+    <rdf:Bag>
+     <rdf:li>paikat|Hanko</rdf:li>
+     <rdf:li>darktable|format|nef</rdf:li>
+    </rdf:Bag>
+   </lr:hierarchicalSubject>
+   <darktable:masks_history>
+    <rdf:Seq/>
+   </darktable:masks_history>
+   <darktable:history>
+    <rdf:Seq>
+     <rdf:li
+      darktable:num="0"
+      darktable:operation="rawprepare"
+      darktable:enabled="1"
+      darktable:modversion="2"
+      darktable:params="0000000000000000000000000000000000000000"
+      darktable:multi_name=""
+      darktable:multi_name_hand_edited="0"
+      darktable:multi_priority="0"
+      darktable:blendop_version="14"
+      darktable:blendop_params="gz08eJxjYIAAFwfjzR8="/>
+     <rdf:li
+      darktable:num="1"
+      darktable:operation="temperature"
+      darktable:enabled="1"
+      darktable:modversion="3"
+      darktable:params="9a99f93f0000803f2731a83f0000c07f"
+      darktable:multi_name=""
+      darktable:multi_name_hand_edited="0"
+      darktable:multi_priority="0"
+      darktable:blendop_version="14"
+      darktable:blendop_params="gz08eJxjYIAAFwfjzR8="/>
+     <rdf:li
+      darktable:num="2"
+      darktable:operation="exposure"
+      darktable:enabled="1"
+      darktable:modversion="6"
+      darktable:params="00000000000080b90000003f00004842000080c0"
+      darktable:multi_name="&lt;kirkkaus&gt; &amp; varjot"
+      darktable:multi_name_hand_edited="1"
+      darktable:multi_priority="0"
+      darktable:blendop_version="14"
+      darktable:blendop_params="gz08eJxjYIAAFwfjzR8="/>
+    </rdf:Seq>
+   </darktable:history>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
