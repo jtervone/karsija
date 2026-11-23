@@ -100,8 +100,13 @@ export function EventView({ route, version: jobsVersion }) {
   const [applying, setApplying] = useState(false);
   const [applyRunning, setApplyRunning] = useState(false);
   const changed = useCallback(() => setApplied((n) => n + 1), []);
+  const undoHint = useRef(false);        // the next Ctrl+Z explains that it does not undo the apply just made
+  const applyDone = useCallback((text) => {
+    undoHint.current = true;
+    review.notify(text);
+  }, [review.notify]);
 
-  useEffect(() => { setCursor(null); setApplying(false); }, [eventId]);
+  useEffect(() => { setCursor(null); setApplying(false); undoHint.current = false; }, [eventId]);
 
   // What is shown changes when the filters change or the event reloads, not with each decision: a shot decided
   // under "Vain tarkastamattomat" stays until then, so the cursor does not jump away from it.
@@ -256,6 +261,13 @@ export function EventView({ route, version: jobsVersion }) {
         break;
       }
       case 'undo': {
+        if (undoHint.current) {
+          // Ctrl+Z right after Toteuta would quietly undo an older decision, maybe in another event
+          undoHint.current = false;
+          review.notify('Toteutusta ei kumota Ctrl+Z:lla: palauta se Toteutukset-listasta kuvien alta. '
+            + 'Ctrl+Z uudelleen kumoaa aiemman päätöksen.');
+          break;
+        }
         const back = review.undo().find((id) => order.index.has(id));
         if (back == null) break;
         setCursor(back);
@@ -297,10 +309,12 @@ export function EventView({ route, version: jobsVersion }) {
         ${FILTERS.map(([key, label, title]) => html`<label key=${key} title=${title}>
           <input type="checkbox" checked=${filters[key]} onChange=${() => toggle(key)} /> ${label}</label>`)}
       </div>`}
-      ${route.view === 'event' && ev && shots.size > 0 && html`<button class="apply-button"
-        onClick=${() => setApplying(true)} title="Siirrä hylätyt kuvat karsittuihin ja kirjoita päätökset XMP:hen">
-        Toteuta</button>`}
-      <button class="help-button" onClick=${() => setHelp(true)} title="Pikanäppäimet (?)">?</button>
+      <span class="toolbar-actions">
+        ${route.view === 'event' && ev && shots.size > 0 && html`<button
+          onClick=${() => setApplying(true)} title="Siirrä hylätyt kuvat karsittuihin ja kirjoita päätökset XMP:hen">
+          Toteuta</button>`}
+        <button class="help-button" onClick=${() => setHelp(true)} title="Pikanäppäimet (?)">?</button>
+      </span>
       ${(review.failure || review.notice) && html`<div class="notices">
         ${review.failure && html`<div class="notice error" role="alert">
           ${review.failure.text}${review.failure.count > 1 && ` (yhteensä ${review.failure.count} tallentamatta)`}
@@ -337,6 +351,6 @@ export function EventView({ route, version: jobsVersion }) {
       onChanged=${changed} />`}
     ${help && html`<${ShortcutHelp} onClose=${() => setHelp(false)} />`}
     ${applying && ev && html`<${ApplyDialog} ev=${ev} settled=${review.settled} onClose=${() => setApplying(false)}
-      onChanged=${changed} onRunning=${setApplyRunning} onDone=${review.notify} />`}
+      onChanged=${changed} onRunning=${setApplyRunning} onDone=${applyDone} />`}
   </main>`;
 }

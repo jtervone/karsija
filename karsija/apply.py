@@ -15,11 +15,13 @@ the apply and the JSON log go into ``undone/<id>/`` of the cache folder.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
 import shutil
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -200,7 +202,7 @@ def plan_json(plan: Plan, root: Path) -> dict[str, Any]:
     }
 
 
-def _rel(root: Path) -> Any:
+def _rel(root: Path) -> Callable[[Path | str], str]:
     def rel(p: Path | str) -> str:
         try:
             return Path(p).relative_to(root).as_posix()
@@ -230,6 +232,9 @@ def apply(store: Store, root: Path, plan: Plan) -> int:
                            (plan.event_id, int(created_dir), time.time()))
     apply_id = int(cur.lastrowid or 0)
     log = reject_dir / f"karsija-apply-{apply_id}.json"
+    if os.path.lexists(log):                # e.g. a symlink: the log would be written where it points
+        store.db.rollback()
+        raise ApplyConflict(f"{log} on jo olemassa; siirrä tai nimeä se ensin")
     store.db.execute("UPDATE applies SET log = ? WHERE id = ?", (str(log), apply_id))
     store.db.executemany(
         "INSERT INTO apply_ops (apply_id, seq, kind, shot_id, src, dst, backup, new_sha256) "
@@ -254,6 +259,11 @@ def apply(store: Store, root: Path, plan: Plan) -> int:
         error = f"{e.strerror}: {e.filename}" if isinstance(e, OSError) and e.strerror and e.filename else str(e)
         _finish(store, root, apply_id, plan, done, "failed", error)
         raise ApplyFailed(apply_id, error) from e
+    except Exception as e:
+        # anything else (the database locked for too long): the apply must not stay "running" until a restart
+        store.db.rollback()
+        _finish(store, root, apply_id, plan, done, "failed", f"{type(e).__name__}: {e}")
+        raise
     _finish(store, root, apply_id, plan, done, "done", "")
     return apply_id
 
@@ -265,17 +275,37 @@ def _do(op: Op) -> None:
         return
     assert op.new is not None
     # the sidecar must still be what the plan merged into: a change made meanwhile (another program) is not lost
-    now = op.src.read_bytes().decode("utf-8", "replace") if os.path.lexists(op.src) else None
+    now = _current(op.src)
     if now != op.backup:
         raise ApplyConflict(f"{op.src} muuttui kesken toteutuksen")
     write_atomic(op.src, op.new)
 
 
+def _current(path: Path) -> str | None:
+    """A sidecar's content as it is now, None if there is none: compared with what the log expects."""
+    return path.read_bytes().decode("utf-8", "replace") if os.path.lexists(path) else None
+
+
 def _move(src: Path, dst: Path) -> None:
-    """Rename without overwriting anything."""
-    if os.path.lexists(dst):
-        raise FileExistsError(17, "kohde on jo olemassa", str(dst))
-    os.rename(src, dst)
+    """Rename without overwriting anything.
+
+    A hard link fails at once if ``dst`` exists, where a rename would replace a file made there meanwhile. On a
+    filesystem without hard links (FAT, exFAT), the check and the rename are separate steps.
+    """
+    try:
+        os.link(src, dst, follow_symlinks=False)
+    except FileExistsError:
+        raise FileExistsError(errno.EEXIST, "kohde on jo olemassa", str(dst)) from None
+    except OSError:
+        if os.path.lexists(dst):
+            raise FileExistsError(errno.EEXIST, "kohde on jo olemassa", str(dst)) from None
+        os.rename(src, dst)
+        return
+    try:
+        os.unlink(src)
+    except OSError:
+        os.unlink(dst)                      # the link just made: the file stays where it was
+        raise
 
 
 def _finish(store: Store, root: Path, apply_id: int, plan: Plan, done: int, status: str, error: str) -> None:
@@ -366,19 +396,20 @@ def restore(store: Store, root: Path, apply_id: int, undone_dir: Path) -> dict[s
                         (event_id, apply_id)).fetchone():
         raise ApplyConflict("tapahtumalla on uudempi toteutus; palauta se ensin")
     rows = store.db.execute(
-        "SELECT seq, kind, src, dst, backup, new_sha256, done FROM apply_ops WHERE apply_id = ? ORDER BY seq DESC",
+        "SELECT seq, kind, src, dst, backup, new_sha256, done, shot_id FROM apply_ops WHERE apply_id = ? "
+        "ORDER BY seq DESC",
         (apply_id,)).fetchall()
     interrupted = status == "running" or error == INTERRUPTED
     in_flight = min((r[0] for r in rows if not r[6]), default=None) if interrupted else None
-    ops = [r[1:6] for r in rows if r[6] or r[0] == in_flight]
+    ops = [(*r[1:6], r[7]) for r in rows if r[6] or r[0] == in_flight]
     rel = _rel(root)
 
     # a moved file is renamed, so only its folders must stay in the library; a sidecar is written through
-    outside = [rel(src) for kind, src, dst, _, _ in ops
+    outside = [rel(src) for kind, src, dst, _, _, _ in ops
                if not inside_root(root, [str(Path(src).parent), str(Path(dst).parent)] if kind == "move" else [src])]
     if outside:
         raise ApplyConflict(f"polku ei enää ole kirjastossa: {', '.join(outside)}")
-    both = [rel(src) for kind, src, dst, _, _ in ops
+    both = [rel(src) for kind, src, dst, _, _, _ in ops
             if kind == "move" and os.path.lexists(src) and os.path.lexists(dst)]
     if both:
         raise ApplyConflict(f"tiedosto on sekä paikallaan että {REJECT_DIR}-kansiossa: {', '.join(both)}")
@@ -387,19 +418,25 @@ def restore(store: Store, root: Path, apply_id: int, undone_dir: Path) -> dict[s
     missing: list[str] = []
     created: list[str] = []
     changed: list[str] = []
+    found: set[int] = set()                 # shots with a file back in place
+    lost: set[int] = set()                  # shots with a moved file found nowhere
     try:
-        for kind, src, dst, backup, new_sha in ops:
+        for kind, src, dst, backup, new_sha, shot_id in ops:
             src_p = Path(src)
             if kind == "move":
                 if os.path.lexists(dst):
                     _move(Path(dst), src_p)
-                elif not os.path.lexists(src):
+                    found.add(shot_id)
+                elif os.path.lexists(src):
+                    found.add(shot_id)
+                else:
                     missing.append(rel(dst))
+                    lost.add(shot_id)
             elif kind == "xmp_create":
                 if os.path.lexists(src_p):
                     created.append(str(_keep(root, src_p, keep_dir)))
             else:
-                now = src_p.read_bytes().decode("utf-8", "replace") if os.path.lexists(src_p) else None
+                now = _current(src_p)
                 if now == backup:
                     continue
                 if now is not None and sha256(now) != new_sha:
@@ -414,6 +451,8 @@ def restore(store: Store, root: Path, apply_id: int, undone_dir: Path) -> dict[s
     store.db.execute(
         "UPDATE shots SET state = 'present' WHERE state = 'moved' AND id IN "
         "(SELECT shot_id FROM apply_ops WHERE apply_id = ? AND kind = 'move')", (apply_id,))
+    # a shot none of whose files was found stays out of the grid, as the next analysis would leave it
+    store.db.executemany("UPDATE shots SET state = 'missing' WHERE id = ?", [(i,) for i in lost - found])
     store.db.execute("UPDATE applies SET status = 'undone', error = '', undone_at = ? WHERE id = ?",
                      (time.time(), apply_id))
     log_dest = _move_log(store, root, apply_id, Path(log), keep_dir)

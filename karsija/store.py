@@ -4,7 +4,8 @@ The store doubles as the analysis cache: a shot is re-analysed only when its
 ``signature`` (path + size + mtime of every file) changes. The user-decision
 columns of ``shots`` (``user_verdict``, ``rating``, ``decided_at``) are written
 by the review server (``karsija serve``), every change also goes into
-``decisions`` so it can be undone. ``jobs`` holds the progress of background
+``decisions`` so it can be undone, until an apply carries the decision out in
+the library and takes its rows off (``forget_decisions``). ``jobs`` holds the progress of background
 analyses. The ``scan`` command writes neither. ``settings`` overrides
 ``analysis.DEFAULT_SETTINGS`` for the server; nothing writes it yet.
 

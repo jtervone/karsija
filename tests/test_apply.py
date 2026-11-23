@@ -391,6 +391,47 @@ def test_restore_does_not_write_through_a_link_out_of_the_library(lib: Lib, tmp_
     assert (lib.event / REJECT_DIR / "a.jpg").exists()             # nothing was reversed
 
 
+def test_a_log_name_taken_in_the_reject_folder_stops_the_apply(lib: Lib, tmp_path: Path) -> None:
+    (lib.event / REJECT_DIR).mkdir()
+    target = tmp_path / "target"
+    target.write_text("precious")
+    (lib.event / REJECT_DIR / "karsija-apply-1.json").symlink_to(target)
+    before = tree(lib.root)
+    with pytest.raises(applies.ApplyConflict, match="karsija-apply-1.json"):
+        applies.apply(lib.store, lib.root, plan(lib))
+    assert tree(lib.root) == before and target.read_text() == "precious"
+    assert lib.store.db.execute("SELECT COUNT(*) FROM applies").fetchone()[0] == 0
+
+
+def test_an_unexpected_error_marks_the_apply_failed(lib: Lib, monkeypatch: pytest.MonkeyPatch) -> None:
+    before = tree(lib.root)
+    real, calls = applies._move, [0]
+
+    def move(src: Path, dst: Path) -> None:
+        calls[0] += 1
+        if calls[0] == 2:
+            raise sqlite3.OperationalError("database is locked")
+        real(src, dst)
+
+    monkeypatch.setattr(applies, "_move", move)
+    with pytest.raises(sqlite3.OperationalError):
+        applies.apply(lib.store, lib.root, plan(lib))
+    monkeypatch.undo()
+    (apply_id, status, error), = lib.store.db.execute("SELECT id, status, error FROM applies").fetchall()
+    assert status == "failed" and "database is locked" in error
+    applies.restore(lib.store, lib.root, apply_id, lib.undone)
+    assert tree(lib.root) == before
+
+
+def test_a_shot_whose_moved_files_are_gone_stays_out_of_the_grid(lib: Lib) -> None:
+    apply_id = applies.apply(lib.store, lib.root, plan(lib))
+    for name in ("e.jpg", "e.xmp"):
+        (lib.event / REJECT_DIR / name).unlink()            # the user deleted them by hand
+    result = applies.restore(lib.store, lib.root, apply_id, lib.undone)
+    assert sorted(result["missing"]) == [f"{EVENT}/{REJECT_DIR}/e.jpg", f"{EVENT}/{REJECT_DIR}/e.xmp"]
+    assert lib.states()["e.jpg"] == "missing" and lib.states()["a.jpg"] == "present"
+
+
 # --------------------------------------------------------------------------- #
 # API
 # --------------------------------------------------------------------------- #
@@ -450,6 +491,16 @@ def test_api_stale_token_is_rejected(lib: Lib, client: TestClient, tmp_path: Pat
     db = sqlite3.connect(tmp_path / "state.sqlite")
     assert db.execute("SELECT COUNT(*) FROM applies").fetchone()[0] == 0
     db.close()
+
+
+def test_api_plan_says_when_an_analysis_is_under_way(lib: Lib, client: TestClient) -> None:
+    assert client.get(f"/api/events/{lib.event_id}/apply-plan").json()["analysing"] is False
+    lib.store.db.execute("INSERT INTO jobs (kind, scope, status) VALUES ('analyse', 'all', 'running')")
+    lib.store.commit()
+    data = client.get(f"/api/events/{lib.event_id}/apply-plan").json()
+    assert data["analysing"] is True
+    resp = post(client, f"/api/events/{lib.event_id}/apply", {"confirm_token": data["confirm_token"]})
+    assert resp.status_code == 409 and "analyysi" in resp.json()["detail"]
 
 
 def test_api_conflict_and_unknown_event(lib: Lib, client: TestClient) -> None:

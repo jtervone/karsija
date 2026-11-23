@@ -490,14 +490,22 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
             "groups": [{"group_id": gid, "shots": shots} for gid, shots in groups.items()],
         }
 
+    def analysing(store: Store, event_id: int) -> bool:
+        """An analysis covering the event is queued or running: an apply must wait for it."""
+        return store.db.execute("SELECT 1 FROM jobs WHERE status IN ('queued', 'running') AND scope IN ('all', ?)",
+                                (str(event_id),)).fetchone() is not None
+
     @app.get("/api/events/{event_id}/apply-plan")
     def apply_plan(event_id: int, store: Db) -> dict[str, Any]:
         """Dry run of Toteuta: the rejected shots to move, the sidecars to create and update (reviewed shots only),
-        how many shots have no decision, and the conflicts. Its ``confirm_token`` confirms exactly this plan."""
+        how many shots have no decision, and the conflicts. Its ``confirm_token`` confirms exactly this plan.
+        ``analysing``: an analysis of the event is queued or running, so the apply would be refused for now."""
         try:
-            return applies.plan_json(applies.build_plan(store, root, event_id), root)
+            data = applies.plan_json(applies.build_plan(store, root, event_id), root)
         except LookupError as e:
             raise HTTPException(404, str(e)) from None
+        data["analysing"] = analysing(store, event_id)
+        return data
 
     @app.post("/api/events/{event_id}/apply")
     def apply_event(event_id: int, body: ApplyRequest, store: Db) -> dict[str, Any]:
@@ -509,8 +517,7 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
                 plan = applies.build_plan(store, root, event_id)
             except LookupError as e:
                 raise HTTPException(404, str(e)) from None
-            if store.db.execute("SELECT 1 FROM jobs WHERE status IN ('queued', 'running') AND scope IN ('all', ?)",
-                                (str(event_id),)).fetchone():
+            if analysing(store, event_id):
                 raise HTTPException(409, "tapahtuman analyysi on kesken; toteuta, kun se on valmis")
             if body.confirm_token != plan.token:
                 raise HTTPException(409, "suunnitelma on muuttunut vahvistuksen jälkeen; tarkista se uudelleen")

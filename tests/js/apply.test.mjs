@@ -17,6 +17,7 @@ test('the summary says how many shots move, how many sidecars are written and ho
     text: 'Siirretään 2 kuvaa (5 tiedostoa), kirjoitetaan 3 XMP:tä (1 uutta, 2 päivitettyä), 4 tarkastamatta.',
     empty: false,
     ready: true,
+    reason: null,
   });
   const one = { ...PLAN, move: [{ shot_id: 1, files: ['a.jpg'] }], xmp_create: [], xmp_update: ['a.xmp'] };
   assert.equal(planSummary(one).text,
@@ -24,16 +25,31 @@ test('the summary says how many shots move, how many sidecars are written and ho
 });
 
 test('a plan with a conflict or nothing to do cannot be confirmed', () => {
-  assert.equal(planSummary({ ...PLAN, conflicts: [{ path: 'x', reason: 'on jo olemassa' }] }).ready, false);
+  const blocked = planSummary({ ...PLAN, conflicts: [{ path: 'x', reason: 'on jo olemassa' }] });
+  assert.equal(blocked.ready, false);
+  assert.match(blocked.reason, /ristiriidat/);
+  assert.match(planSummary({ ...PLAN, analysing: true }).reason, /analyysi on kesken/);
+  assert.equal(planSummary({ ...PLAN, analysing: true }).ready, false);
   const empty = { ...PLAN, move: [], xmp_create: [], xmp_update: [] };
   assert.deepEqual(planSummary(empty), {
-    text: 'Siirretään 0 kuvaa, kirjoitetaan 0 XMP:tä, 4 tarkastamatta.', empty: true, ready: false,
+    text: 'Siirretään 0 kuvaa, kirjoitetaan 0 XMP:tä, 4 tarkastamatta.', empty: true, ready: false, reason: null,
   });
+});
+
+test('decisions blocked only by conflicts are not "nothing to do"', () => {
+  const plan = { ...PLAN, move: [], xmp_create: [], xmp_update: [], conflicts: [{ path: 'a.NEF', reason: 'x' }] };
+  const summary = planSummary(plan);
+  assert.equal(summary.empty, false);
+  assert.equal(summary.ready, false);
 });
 
 test('an apply of the history', () => {
   assert.equal(applyText({ shots_moved: 3, xmp_created: 2, xmp_updated: 6 }), 'siirretty 3 kuvaa, kirjoitettu 8 XMP:tä');
   assert.equal(applyText({ shots_moved: 1, xmp_created: 0, xmp_updated: 1 }), 'siirretty 1 kuva, kirjoitettu 1 XMP');
+  assert.equal(applyText({ shots_moved: 3, xmp_created: 2, xmp_updated: 6 }, 'e/_karsitut'),
+    'siirretty 3 kuvaa kansioon e/_karsitut, kirjoitettu 8 XMP:tä');
+  assert.equal(applyText({ shots_moved: 0, xmp_created: 2, xmp_updated: 0 }, 'e/_karsitut'),
+    'siirretty 0 kuvaa, kirjoitettu 2 XMP:tä');
 });
 
 test('an apply that did not finish says how far it got', () => {
