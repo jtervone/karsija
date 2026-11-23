@@ -12,6 +12,7 @@ import os
 import re
 import socket
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -139,7 +140,7 @@ SCAN_EPILOG = ("Mitään ei poisteta. --write-xmp kirjoittaa XMP-sivutiedoston v
 
 SERVE_EPILOG = ("Palvelin ei kirjoita kirjastoon mitään: päätökset ja analyysit tallentuvat tietokantaan, "
                 "oletuksena kirjaston ulkopuolelle (ks. --db), ja esikatselukuvat välimuistiin (ks. --previews; "
-                "noin 1 Mt kuvaa kohden, kansion voi poistaa milloin vain).")
+                "tavallisesti 0,5–1 Mt kuvaa kohden, kansion voi poistaa milloin vain).")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -303,6 +304,17 @@ def bind_error(host: str, port: int) -> str:
     return ""
 
 
+def cache_error(folder: Path) -> str:
+    """Why files cannot be written into ``folder`` (created if missing), or ``""``."""
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryFile(dir=folder):
+            pass
+    except OSError as e:
+        return e.strerror or str(e)
+    return ""
+
+
 def serve(args: argparse.Namespace) -> int:
     import threading
     import webbrowser
@@ -320,6 +332,12 @@ def serve(args: argparse.Namespace) -> int:
     db_path = (args.db.expanduser() if args.db else default_db_path(root)).resolve()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     preview_dir = (args.previews.expanduser() if args.previews else default_cache_dir()).resolve()
+    if preview_dir.is_relative_to(root):
+        print(f"VAROITUS: esikatselukansio {preview_dir} on kirjaston sisällä; palvelin kirjoittaa sinne.",
+              file=sys.stderr)
+    if error := cache_error(preview_dir):
+        print(f"VAROITUS: esikatselukansioon {preview_dir} ei voi kirjoittaa ({error}); esikatseluja ei voi "
+              "tehdä. Valitse toinen kansio valitsimella --previews.", file=sys.stderr)
     if not is_loopback(args.host):
         print(f"VAROITUS: palvelin kuuntelee osoitteessa {args.host}. Kuka tahansa verkossa voi selata kirjastoa "
               "ja tehdä päätöksiä; palvelimessa ei ole kirjautumista. Käytä vain luotetussa verkossa.",

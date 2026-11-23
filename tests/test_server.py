@@ -606,16 +606,22 @@ def test_broken_image_preview_is_an_error(own: Server) -> None:
     assert resp.json()["detail"] == "kuvaa ei voi lukea: tiedosto on rikki tai sen muotoa ei tueta"
 
 
-def test_preview_of_a_raw_without_rawpy(own: Server, monkeypatch: pytest.MonkeyPatch) -> None:
-    def no_rawpy(*args: Any) -> None:
-        raise RawpyMissing("rawpy not installed, cannot read RAW")
+@pytest.mark.parametrize(("error", "status", "detail"), [
+    (RawpyMissing("rawpy not installed, cannot read RAW"), 500, "RAW-kuvan esikatselu vaatii rawpy-paketin"),
+    (previews.NoAccess("[Errno 13] Permission denied"), 500, "kuvaa ei voi lukea: ei lukuoikeutta tiedostoon"),
+    (PermissionError(13, "Permission denied"), 500, "esikatselua ei voi tallentaa välimuistiin: Permission denied"),
+])
+def test_preview_errors(own: Server, monkeypatch: pytest.MonkeyPatch, error: Exception, status: int,
+                        detail: str) -> None:
+    def fail(*args: Any) -> None:
+        raise error
 
-    monkeypatch.setattr(previews, "make", no_rawpy)
+    monkeypatch.setattr(previews, "make", fail)
     shot_id = own.shots()["sharp.jpg"]["id"]
     src = own.root / EVENT / "sharp.jpg"
     os.utime(src, (src.stat().st_atime, src.stat().st_mtime + 10))   # not in the cache any more
     resp = own.client.get(f"/api/shots/{shot_id}/preview")
-    assert (resp.status_code, resp.json()["detail"]) == (500, "RAW-kuvan esikatselu vaatii rawpy-paketin")
+    assert (resp.status_code, resp.json()["detail"]) == (status, detail)
 
 
 def test_etag_matches() -> None:

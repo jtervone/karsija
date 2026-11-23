@@ -72,19 +72,25 @@ Decisions are stored in the server's database only. They are not written to XMP 
 
 Previews: `GET /api/shots/{id}/preview?size=grid` (long edge 400 px, the default) or `size=full` (2560 px) returns
 an upright JPEG, never larger than the image it is made from. A RAW+JPEG pair is previewed from the JPEG, a RAW
-alone from its embedded preview, which is often smaller than 2560 px, so `full` can be smaller too. The analysis
-writes both sizes as it goes; a missing one is made on the first request. They are kept in
-`$XDG_CACHE_HOME/karsija/previews/` (by default `~/.cache/karsija/previews/`; choose another folder with
-`serve --previews DIR`), one file per shot and size, typically 0.5–1 MB per shot, nearly all of it the full size.
-A preview is made again when a file of the shot changes. Old previews are not removed; the folder can be deleted
-at any time.
+alone from its embedded preview (or a half-size conversion when it has none), which is often smaller than 2560 px,
+so `full` can be smaller too. The analysis writes both sizes as it goes; a missing one is made on the first
+request. They are kept in `$XDG_CACHE_HOME/karsija/previews/` (by default `~/.cache/karsija/previews/`;
+choose another folder with `serve --previews DIR`), one file per shot and size, typically 0.5–1 MB per shot,
+nearly all of it the full size. A preview is made again when a file of the shot changes. Old previews are not
+removed; the folder can be deleted at any time.
 
 Every shot in the JSON has a `preview` field with the URL of each size, e.g.
 `{"grid": "/api/shots/12/preview?size=grid&v=…", "full": "…"}`. Its `v` names the current version of the shot's
 files: the browser may keep that response for a year, and a changed file gets a new URL after the next analysis.
 Any other URL (no `v`, or an old one) is answered with `Cache-Control: no-cache`, so the browser asks again each
-time and gets `304 Not Modified` by the `ETag` while the files are unchanged. A file that cannot be read gives
-`422 kuvaa ei voi lukea`, a missing file `404`.
+time and gets `304 Not Modified` by the `ETag` while the files are unchanged.
+
+Errors: a missing shot or file gives `404`, a file that resolves outside the library `403`. A broken file or a
+format that cannot be read gives `422 kuvaa ei voi lukea: tiedosto on rikki tai sen muotoa ei tueta` (a bad `size`
+is also `422`, but with FastAPI's list of validation errors as `detail` instead of a string). `500` means the
+server cannot make the preview: `RAW-kuvan esikatselu vaatii rawpy-paketin`, `kuvaa ei voi lukea: ei
+lukuoikeutta tiedostoon`, or `esikatselua ei voi tallentaa välimuistiin: …` when the preview folder cannot be
+written. `serve` warns at startup when the preview folder cannot be written, or when it is inside the library.
 
 ```sh
 curl -o grid.jpg 'localhost:8765/api/shots/1/preview?size=grid'

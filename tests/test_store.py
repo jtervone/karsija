@@ -10,7 +10,7 @@ import pytest
 from conftest import EXIF_META, Library
 
 from karsija.analysis import DEFAULT_SETTINGS, Shot
-from karsija.store import SCHEMA, SCHEMA_VERSION, UNSET, Store, default_db_path
+from karsija.store import CACHE_VERSION, RAW_CACHE_VERSION, SCHEMA, SCHEMA_VERSION, UNSET, Store, default_db_path
 
 
 def make_shot(path: Path) -> Shot:
@@ -45,6 +45,21 @@ def test_signature_covers_every_file(tmp_path: Path) -> None:
     assert f"{raw}:3:" in sig and f"{jpg}:4:" in sig
     jpg.write_bytes(b"longer jpeg")
     assert Store.signature([str(raw), str(jpg)]) != sig
+
+
+def test_raw_only_shots_have_their_own_cache_version(tmp_path: Path) -> None:
+    """RAW-only analyses changed (turned upright): their old rows must not be reused; JPEG ones stay valid."""
+    raw, jpg = tmp_path / "a.nef", tmp_path / "a.jpg"
+    raw.write_bytes(b"raw")
+    jpg.write_bytes(b"jpeg")
+    assert Store.signature([str(raw)]).startswith(f"v{RAW_CACHE_VERSION}|")
+    assert Store.signature([str(jpg), str(raw)]).startswith(f"v{CACHE_VERSION}|")
+    assert Store.signature([str(jpg)]).startswith(f"v{CACHE_VERSION}|") and CACHE_VERSION == 4   # legacy cache
+    store = Store(tmp_path / "karsija.sqlite")
+    old_sig = Store.signature([str(raw)]).replace(f"v{RAW_CACHE_VERSION}|", "v4|", 1)
+    store.put(store.event_id("2025/2025-06-01-x"), Shot(key=str(raw), files=[str(raw)], sharp=50.0), old_sig)
+    assert store.get(str(raw), Store.signature([str(raw)])) is None
+    store.close()
 
 
 def test_put_keeps_user_decisions(tmp_path: Path) -> None:

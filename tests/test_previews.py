@@ -15,7 +15,7 @@ from karsija import library as library_mod
 from karsija import previews
 from karsija.analysis import analyse_file
 from karsija.library import RawpyMissing, load_image
-from karsija.previews import SIZES, PreviewCache, UnreadableImage, default_cache_dir, preview_path
+from karsija.previews import SIZES, NoAccess, PreviewCache, UnreadableImage, default_cache_dir, preview_path
 from karsija.store import Store
 
 
@@ -93,6 +93,26 @@ def test_analysis_survives_a_failing_preview(tmp_path: Path) -> None:
     assert not shot.error and shot.sharp >= 0
 
 
+def test_analysis_does_not_resample_existing_previews(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    src = tmp_path / "rot.jpg"
+    rotated_jpeg(src)
+    cache, sig = tmp_path / "cache", Store.signature([str(src)])
+    analyse_file(str(src), [str(src)], (cache, sig))
+    rendered: list[str] = []
+    render = previews.render
+
+    def counting_render(pil: Image.Image, size: str, turn: int | None = None) -> Image.Image:
+        rendered.append(size)
+        return render(pil, size, turn)
+
+    monkeypatch.setattr(previews, "render", counting_render)
+    analyse_file(str(src), [str(src)], (cache, sig))
+    assert rendered == []
+    preview_path(cache, sig, "grid").unlink()
+    analyse_file(str(src), [str(src)], (cache, sig))
+    assert rendered == ["full", "grid"] and preview_path(cache, sig, "grid").is_file()
+
+
 RGB = np.stack([texture(7, 1600, 1200)] * 3, axis=-1)
 
 
@@ -152,6 +172,18 @@ def test_raw_without_rawpy_and_broken_files(tmp_path: Path, monkeypatch: pytest.
         cache.get(str(broken), [str(broken)], "b", "grid")
     with pytest.raises(FileNotFoundError):
         cache.get(str(tmp_path / "gone.jpg"), [str(tmp_path / "gone.jpg")], "c", "grid")
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+def test_unreadable_permissions_are_not_a_broken_file(tmp_path: Path) -> None:
+    src = tmp_path / "rot.jpg"
+    rotated_jpeg(src)
+    src.chmod(0)
+    try:
+        with pytest.raises(NoAccess):
+            PreviewCache(tmp_path / "cache").get(str(src), [str(src)], "sig", "grid")
+    finally:
+        src.chmod(0o644)
 
 
 def test_raw_jpeg_pair_prefers_the_jpeg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

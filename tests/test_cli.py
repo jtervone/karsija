@@ -144,6 +144,20 @@ def test_serve_preview_dir(library: Library, tmp_path: Path, fake_uvicorn: list[
     assert fake_uvicorn[1]["app"].state.previews.cache_dir == default_cache_dir()
 
 
+def test_serve_warns_about_the_preview_dir(library: Library, tmp_path: Path, fake_uvicorn: list[dict[str, Any]],
+                                          capsys: pytest.CaptureFixture[str]) -> None:
+    db = str(tmp_path / "k.sqlite")
+    (tmp_path / "file").write_bytes(b"")
+    assert main(["serve", str(library.root), "--no-browser", "--db", db, "--previews", str(tmp_path / "file")]) == 0
+    assert "VAROITUS: esikatselukansioon" in capsys.readouterr().err
+    inside = library.root / ".previews"
+    try:
+        assert main(["serve", str(library.root), "--no-browser", "--db", db, "--previews", str(inside)]) == 0
+        assert "on kirjaston sisällä" in capsys.readouterr().err
+    finally:
+        inside.rmdir()
+
+
 @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.10", "::", "example.local"])
 def test_serve_warns_on_non_loopback_host(library: Library, tmp_path: Path, host: str,
                                           fake_uvicorn: list[dict[str, Any]],

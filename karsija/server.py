@@ -507,6 +507,8 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
             raise HTTPException(404, "tiedostoa ei ole") from None
         except RawpyMissing:
             raise HTTPException(500, "RAW-kuvan esikatselu vaatii rawpy-paketin") from None
+        except previews.NoAccess:
+            raise HTTPException(500, "kuvaa ei voi lukea: ei lukuoikeutta tiedostoon") from None
         except previews.UnreadableImage:
             raise HTTPException(422, "kuvaa ei voi lukea: tiedosto on rikki tai sen muotoa ei tueta") from None
         except OSError as e:

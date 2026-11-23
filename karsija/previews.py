@@ -38,6 +38,10 @@ class UnreadableImage(Exception):
     """The source file is there but cannot be decoded (broken, or a format Pillow does not read)."""
 
 
+class NoAccess(Exception):
+    """The source file is there but may not be read (permissions)."""
+
+
 def default_cache_dir() -> Path:
     """``$XDG_CACHE_HOME/karsija/previews``, by default ``~/.cache/karsija/previews``."""
     base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
@@ -97,8 +101,11 @@ def save(img: Image.Image, dest: Path, size: str) -> None:
 def write_all(pil: Image.Image, cache_dir: Path, sig: str) -> None:
     """Every size from an image that is already decoded (the analysis worker's). The full-resolution image is
     resampled once: each smaller size is made from the one before it."""
+    sizes = sorted(SIZES, key=SIZES.__getitem__, reverse=True)
+    if all(preview_path(cache_dir, sig, size).exists() for size in sizes):
+        return                  # analysed again (a failed job, a new pool): nothing to resample
     img, turn = pil, None
-    for size in sorted(SIZES, key=SIZES.__getitem__, reverse=True):
+    for size in sizes:
         img, turn = render(img, size, turn), 1
         dest = preview_path(cache_dir, sig, size)
         if not dest.exists():
@@ -111,6 +118,8 @@ def make(primary: str, files: list[str], cache_dir: Path, sig: str, size: str) -
         img = render(open_image(source_file(primary, files), draft=SIZES[size]), size)
     except (FileNotFoundError, RawpyMissing):
         raise
+    except PermissionError as e:
+        raise NoAccess(str(e)) from e
     except Exception as e:  # noqa: BLE001
         raise UnreadableImage(f"{type(e).__name__}: {e}") from e
     dest = preview_path(cache_dir, sig, size)
