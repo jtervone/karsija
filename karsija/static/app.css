@@ -139,12 +139,12 @@ progress:indeterminate::-moz-progress-bar { background: transparent; }
 .card .thumb { position: relative; aspect-ratio: 3 / 2; background: #000; }
 .card img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .card.reject img { opacity: .35; filter: grayscale(.7); }
-.card .decision {
+.card .decision, .stage .decision {
   position: absolute; top: .3rem; right: .3rem; width: 1.6rem; height: 1.6rem; border-radius: 50%;
   display: grid; place-items: center; font-weight: 700; color: #fff; box-shadow: 0 0 0 2px #000;
 }
-.card .decision.keep { background: var(--kept); }
-.card .decision.reject { background: var(--blurry); }
+.decision.keep { background: var(--kept); }
+.decision.reject { background: var(--blurry); }
 .card .stars {
   position: absolute; left: .3rem; bottom: .3rem; padding: 0 .3rem; border-radius: 4px; font-size: .85rem;
   background: rgba(0, 0, 0, .7); color: var(--star);
@@ -156,6 +156,51 @@ progress:indeterminate::-moz-progress-bar { background: transparent; }
 .card .sharp { color: var(--muted); font-variant-numeric: tabular-nums; }
 .card .auto, .card .sharp, .card .reason, .card .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card .name { color: var(--muted); }
+
+/* Loupe: the image fills what the toolbar leaves of the window, the metadata beside it */
+.page.loupe-page { height: 100vh; height: 100dvh; display: flex; flex-direction: column; padding-bottom: .8rem; }
+.offline ~ .page.loupe-page { padding-bottom: 2.6rem; }      /* the banner covers no part of the image */
+.loupe { flex: 1; min-height: 0; display: flex; gap: .8rem; margin-top: .8rem; }
+.stage {
+  position: relative; flex: 1; min-width: 0; overflow: hidden; background: #000; border-radius: 6px;
+  cursor: zoom-in; touch-action: manipulation; user-select: none;
+}
+.stage.zoomed { cursor: grab; touch-action: none; }   /* a drag pans the image, not the page */
+.stage.still { cursor: default; }
+.stage.dragging { cursor: grabbing; }
+.stage img { position: absolute; left: 0; top: 0; pointer-events: none; }
+.stage img.fitted { width: 100%; height: 100%; object-fit: contain; }
+.stage img.placed { max-width: none; transform-origin: 0 0; }
+.stage img.covered { visibility: hidden; }     /* the grid preview, once the full one is over it */
+/* a rejected shot is dimmed as a whole, so neither image shows through the other */
+.stage.reject::after { content: ''; position: absolute; inset: 0; background: rgba(0, 0, 0, .4); pointer-events: none; }
+.stage .decision { top: .6rem; right: .6rem; width: 2rem; height: 2rem; font-size: 1.1rem; }
+.stage .decision, .stage .stage-label { z-index: 1; }
+.stage .stage-label {
+  position: absolute; right: .6rem; width: fit-content; left: .6rem; bottom: .6rem; margin: 0; padding: .1rem .45rem; border-radius: 4px;
+  background: rgba(0, 0, 0, .7); font-size: .85rem;
+}
+.meta {
+  --v: var(--line);
+  flex: none; width: 19rem; overflow-y: auto; background: var(--panel); border-radius: 6px; border-top: 5px solid var(--v);
+  padding: .5rem .9rem .8rem; font-size: .9rem; color: var(--text);   /* not the verdict colour of .verdict-* */
+}
+.meta.verdict-best { --v: var(--best); }
+.meta.verdict-keep { --v: var(--keep); }
+.meta.verdict-similar { --v: var(--similar); }
+.meta.verdict-blurry { --v: var(--blurry); }
+.meta.verdict-error { --v: var(--error); }
+.meta .position { margin: 0 0 .5rem; font-size: .85rem; }
+.meta dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .3rem .8rem; margin: 0; }
+.meta dt { color: var(--muted); }
+.meta dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.meta .auto { color: var(--v); font-weight: 600; }
+.meta.verdict-keep .auto { color: var(--text); }
+.meta .reason { color: var(--muted); font-size: .85rem; }
+.meta .decided.keep, .meta .decided.reject { font-weight: 600; }
+.meta .decided.keep { color: var(--best); }
+.meta .decided.reject { color: var(--blurry); }
+.meta .stars { color: var(--star); font-weight: normal; }
 
 .overlay {
   position: fixed; inset: 0; z-index: 10; display: flex; overflow: auto; padding: 1rem; background: rgba(0, 0, 0, .6);
@@ -191,6 +236,14 @@ kbd {
   .top .actions { width: 100%; }
   .top .progress { display: flex; flex-direction: column; align-items: stretch; gap: .2rem; white-space: normal; }
   .top progress { width: 100%; }
+}
+
+/* narrow screens: the metadata under the image, the page scrolls */
+@media (max-width: 52rem) {
+  .page.loupe-page { height: auto; }
+  .loupe { flex-direction: column; }
+  .stage { flex: none; height: 75vh; }
+  .meta { width: auto; }
 }
 
 @media (max-width: 40rem) {

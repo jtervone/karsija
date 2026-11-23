@@ -71,17 +71,33 @@ picks a shot, a double-click opens it (like Enter). The whole event can be revie
 | U | back to the suggestion: clears the decision and the stars |
 | Space | accept the suggestion for the group's shots that have no decision yet (also those a filter hides) and go to the next group |
 | Ctrl+Z | undo the last decision (a Space counts as one); again to go further back |
-| Enter, C | open the shot, compare the group's shots |
-| Z | 100 % / fit in those views, once they are done |
+| Enter, C | open the shot in the loupe, compare the group's shots |
+| Z | in the loupe: zoom in (100 %, or 200 % on a 2× screen) around the pointer (or the centre) / fit |
 | Esc | back to the grid; in the grid, closes the message under the toolbar |
 | ? | all of these on the page |
 
 Decisions show at once and are saved in the background, one at a time in the order they were made. One the server
 refuses is taken back, and its error stays under the toolbar until closed (× or Esc), counting further failures.
 Ctrl+Z undoes the last decision stored on the server, even one made before the page was opened or in another event
-(the page then says so). The loupe and compare views
-(`#/event/<id>/loupe/<shot>`, `#/event/<id>/compare/<group>`) come later. Until then they show the current shot
-(or its group) as a card, and every key except Z already works there, so each decision stays visible.
+(the page then says so).
+
+Enter (or a double-click) opens the current shot in the **loupe** (`#/event/<id>/loupe/<shot>`): its 2560 px
+preview, fitted to the window (never enlarged). Z or a click zooms in to 100 % (one preview pixel per screen pixel)
+around the pointer; beside the image, around its nearest edge, and with Z while the pointer is off the image area,
+around the centre. Where 100 % would hardly enlarge the fitted image (a HiDPI screen), it zooms to one preview pixel
+per CSS pixel instead (200 % on a 2× screen); the corner label shows which. Where even that would not enlarge it
+(the image already shows whole at full size), the image does not zoom. Drag to pan, Z or a click again to fit. The
+zoom and the spot stay when moving to the next shot, so a burst can be compared zoomed in; until the next full
+preview has loaded, its grid preview stands in at the same place, labelled *ladataan…*. If the full preview cannot
+be made, the stage says so over the grid preview, which is too small to judge sharpness from. Beside the image:
+where the shot is among the shown ones (and which filters hide the others), your decision and stars, the automatic
+verdict with its suggestion and reason, the sharpness (in a group also as % of the group's sharpest), blown
+highlights and crushed shadows (% of the pixels), the capture time, and the shutter speed, aperture, ISO, focal
+length (and its 35 mm equivalent when the camera stores another), camera and lens when the file's EXIF has them, and
+the shot's files (RAW and JPEG). Every key above except Enter works in the loupe as in the grid, the filters still
+apply, and the next and previous shots' previews load ahead. Esc (or Back) returns to the grid where it was left,
+scrolled only as far as the current shot needs. The compare view (`#/event/<id>/compare/<group>`) comes later; until
+then it shows the group as cards, and every key except Enter and Z works there.
 
 The UI needs no network: Preact and htm are vendored in `karsija/static/vendor/` (versions and licences in its
 README), there is no build step, and the page's Content-Security-Policy lets it load nothing from other sites.
@@ -107,6 +123,10 @@ is still queued or running returns that job (200) instead of starting another.
 
 The server groups and judges with the default thresholds of `scan` (see `GET /api/settings`). The `scan`
 threshold flags do not apply to it, and the thresholds cannot be changed yet.
+
+`GET /api/shots/{id}` returns one shot with its `exif`, which the shots of `/api/events/{id}` leave out:
+`datetime_original`, `exposure_time` (seconds), `f_number`, `iso`, `focal_length` and `focal_length_35mm` (mm),
+`camera` and `lens`, each only when the file has it.
 
 Decisions:
 

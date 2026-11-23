@@ -3,10 +3,22 @@ import { Component, html } from './ui.js';
 import { SUGGESTION } from './review.js';
 
 export const VERDICTS = { best: 'paras', keep: 'hyvä', similar: 'samankaltainen', blurry: 'epäterävä', error: 'virhe' };
-const DECISIONS = { keep: 'pidä', reject: 'hylkää' };
+export const DECISIONS = { keep: 'pidä', reject: 'hylkää' };
+
+/** The corner badge of the user's own decision (`keep` or `reject`), or nothing. */
+export function DecisionBadge({ decided }) {
+  if (!decided) return null;
+  return html`<span class=${`decision ${decided}`} title=${`oma päätös: ${DECISIONS[decided]}`}>
+    ${decided === 'keep' ? '✓' : '✕'}</span>`;
+}
 
 export function stars(rating) {
   return rating === 0 ? '☆' : '★'.repeat(rating);
+}
+
+/** The user's stars, or nothing. */
+export function Stars({ rating }) {
+  return rating == null ? null : html`<span class="stars" title=${`${rating} tähteä`}>${stars(rating)}</span>`;
 }
 
 /**
@@ -39,9 +51,8 @@ class Card extends Component {
         onClick=${() => onPick(shot.id)} onDblClick=${() => onOpen(shot.id)}>
       <div class="thumb">
         <img src=${shot.preview.grid} alt="" loading="lazy" decoding="async" draggable="false" />
-        ${decided && html`<span class=${`decision ${decided}`} title=${`oma päätös: ${DECISIONS[decided]}`}>
-          ${decided === 'keep' ? '✓' : '✕'}</span>`}
-        ${shot.rating != null && html`<span class="stars" title=${`${shot.rating} tähteä`}>${stars(shot.rating)}</span>`}
+        <${DecisionBadge} decided=${decided} />
+        <${Stars} rating=${shot.rating} />
       </div>
       <figcaption>
         <div class="line">
