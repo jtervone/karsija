@@ -72,6 +72,26 @@ def test_scan_move_marks_shots_moved(library: Library, tmp_path: Path) -> None:
     assert {n for n, s in states.items() if s == "moved"} == {"motion.jpg", "defocus.jpg"}
 
 
+def test_scan_write_xmp_merges(library: Library, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = tmp_path / "lib"
+    shutil.copytree(library.root, root)
+    event = root / library.event.relative_to(library.root)
+    darktable = (Path(__file__).parent / "fixtures" / "darktable.nef.xmp").read_text(encoding="utf-8")
+    (event / "DSC_0100.NEF.xmp").write_text(darktable, encoding="utf-8")
+    (event / "motion.xmp").write_text("<x:xmpmeta", encoding="utf-8")
+    report = tmp_path / "report"
+    assert main(["scan", str(root), "--report", str(report), "--workers", "2", "--write-xmp"]) == 0
+
+    captured = capsys.readouterr()
+    assert "XMP: 9 kuvaa kirjoitettu, 1 virheellistä jätetty ennalleen" in captured.out
+    assert "motion.xmp" in captured.err
+    assert (event / "motion.xmp").read_text(encoding="utf-8") == "<x:xmpmeta"
+    merged = (event / "DSC_0100.NEF.xmp").read_text(encoding="utf-8")
+    assert 'xmp:Rating="3"' in merged and "xmp:Label" not in merged and "rawprepare" in merged
+    assert not (event / "DSC_0100.xmp").exists()
+    assert 'xmp:Rating="-1"' in (event / "defocus.xmp").read_text(encoding="utf-8")
+
+
 def test_scan_imports_legacy_cache(library: Library, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     report = tmp_path / "report"
     assert main(["scan", str(library.root), "--report", str(report), "--workers", "2"]) == 0

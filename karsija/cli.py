@@ -19,7 +19,7 @@ from pathlib import Path
 
 import cv2
 
-from karsija.actions import REJECT_DIR, move_rejects, write_xmp
+from karsija.actions import REJECT_DIR, XmpError, move_rejects, xmp_set, xmp_values
 from karsija.analysis import Shot, analyse_file, group_shots, judge
 from karsija.library import JPEG_EXT, collect_shots, find_event_dirs, load_image
 from karsija.previews import default_cache_dir
@@ -135,7 +135,8 @@ def write_csv(report_dir: Path, results: dict[Path, list[Shot]]) -> Path:
 # --------------------------------------------------------------------------- #
 SHUTDOWN_GRACE = 2          # seconds the server waits for open requests when stopped
 MOVE_KINDS = {"blurry", "similar"}
-SCAN_EPILOG = ("Mitään ei poisteta. --write-xmp kirjoittaa XMP-sivutiedoston vain, jos sellaista ei vielä ole. "
+SCAN_EPILOG = ("Mitään ei poisteta. --write-xmp päivittää olemassa oleviin XMP-sivutiedostoihin vain arvion ja "
+               "väritunnisteen (xmp:Rating, xmp:Label) ja luo nimi.xmp:n, jos sivutiedostoa ei ole. "
                f"--move siirtää karsitut tapahtumakansion {REJECT_DIR}-alikansioon, josta ne voi siirtää takaisin.")
 
 
@@ -164,7 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--rel-blur", type=float, default=0.25, help="alle tämä osuus kansion mediaanista = epäterävä")
     sc.add_argument("--sim-keep", type=float, default=0.0,
                     help="pidä ryhmän jäsen myös, jos terävyys ≥ tämä × paras (esim. 0.95). Oletus: vain paras pidetään")
-    sc.add_argument("--write-xmp", action="store_true", help="kirjoita arvio XMP-sivutiedostoon (ei ylikirjoita)")
+    sc.add_argument("--write-xmp", action="store_true", help="kirjoita arvio XMP-sivutiedostoihin (muut tiedot säilyvät)")
     sc.add_argument("--move", default="", help="siirrä _karsitut-alikansioon: blurry,similar")
     sc.set_defaults(func=scan)
 
@@ -201,6 +202,19 @@ def main(argv: list[str] | None = None) -> int:
     return int(args.func(args))
 
 
+def write_xmp(shot: Shot) -> str:
+    """Rating and label of a scanned shot into its sidecars: ``written``, ``skip`` (nothing to write) or ``error``."""
+    values = xmp_values(shot.verdict)
+    if values is None:
+        return "skip"
+    try:
+        xmp_set(shot.key, *values)
+    except (XmpError, OSError) as e:
+        print(f"XMP jätetty ennalleen: {e}", file=sys.stderr)
+        return "error"
+    return "written"
+
+
 def scan(args: argparse.Namespace) -> int:
     root = args.root.expanduser().resolve()
     if not root.is_dir():
@@ -226,7 +240,7 @@ def scan(args: argparse.Namespace) -> int:
             print(f"Tuotiin {imported} analyysiä vanhasta välimuistista ({legacy_path.name}); tiedoston voi poistaa.")
         results = analyse_events(store, root, events, args.workers)
 
-        xmp_stats = {"written": 0, "exists": 0, "skip": 0}
+        xmp_stats = {"written": 0, "error": 0, "skip": 0}
         moved = 0
         for shots in results.values():
             group_shots(shots, args.gap, args.hamming, 0.9)
@@ -252,7 +266,7 @@ def scan(args: argparse.Namespace) -> int:
             counts[s.verdict] = counts.get(s.verdict, 0) + 1
     print("Tulokset: " + ", ".join(f"{VERDICT_FI.get(k, k)} {v}" for k, v in counts.items()))
     if args.write_xmp:
-        print(f"XMP: {xmp_stats['written']} kirjoitettu, {xmp_stats['exists']} oli jo olemassa (ei koskettu)")
+        print(f"XMP: {xmp_stats['written']} kuvaa kirjoitettu, {xmp_stats['error']} virheellistä jätetty ennalleen")
     if move_kinds:
         print(f"Siirretty {moved} kuvaa {REJECT_DIR}-alikansioihin")
     print(f"Raportti: {html_path.resolve()}\nCSV:      {csv_path.resolve()}")

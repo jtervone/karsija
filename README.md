@@ -6,8 +6,12 @@ inside each event folder, picks the best of each group and writes an HTML review
 
 **Nothing is ever deleted.** Optional actions:
 
-- `--write-xmp` writes rating and label to an XMP sidecar, only where no sidecar exists yet
-  (both `name.xmp` and `name.ext.xmp` are checked).
+- `--write-xmp` writes rating and label (`xmp:Rating`, `xmp:Label`) to the XMP sidecars: every existing
+  `name.ext.xmp` (darktable) and `name.xmp` (digiKam, Lightroom) is updated in place, keeping all its other
+  data (edit history, tags, face regions); `name.xmp` is created when there is none. best = 5 / Green,
+  keep = 3, similar = 1 / Yellow, blurry = -1 / Red. A sidecar that is not valid XMP is left untouched and
+  reported. The other data survives, but the file is re-serialised, so its layout (line breaks between
+  attributes, where namespaces are declared) can change.
 - `--move blurry,similar` moves rejects into the event folder's `_karsitut/` subfolder, together
   with their RAW/JPEG pair and XMP sidecars. Move them back to undo.
 
