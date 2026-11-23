@@ -3,18 +3,19 @@ import { html, useEffect, useRef } from './ui.js';
 
 /** The shortcuts as the help overlay lists them. */
 export const SHORTCUTS = [
-  ['← →', 'edellinen / seuraava kuva'],
+  ['← →', 'edellinen / seuraava kuva (pidä painettuna selataksesi)'],
   ['↑ ↓', 'edellinen / seuraava ryhmä'],
   ['P', 'pidä'],
   ['X', 'hylkää'],
   ['0–5', 'tähdet'],
   ['U', 'takaisin ehdotukseen (poistaa oman päätöksen ja tähdet)'],
-  ['Välilyönti', 'hyväksy ryhmän ehdotus ja siirry seuraavaan ryhmään'],
+  ['Välilyönti', 'hyväksy ehdotus ryhmän kuville, joilla ei vielä ole päätöstä (myös suodattimen piilottamille), '
+    + 'ja siirry seuraavaan ryhmään'],
   ['Enter', 'avaa kuva'],
   ['C', 'vertaile ryhmän kuvia'],
-  ['Z', '100 % / sovita (kuva- ja vertailunäkymässä)'],
-  ['Esc', 'takaisin ruudukkoon'],
-  ['Ctrl+Z', 'kumoa viimeisin päätös'],
+  ['Z', '100 % / sovita (kuva- ja vertailunäkymässä, kun ne valmistuvat)'],
+  ['Esc', 'takaisin ruudukkoon; ruudukossa sulkee ilmoituksen'],
+  ['Ctrl+Z', 'kumoa viimeisin tallennettu päätös (myös toisessa tapahtumassa tai aiemmin tehty)'],
   ['?', 'näytä tai piilota pikanäppäimet'],
 ];
 
@@ -50,18 +51,19 @@ export function keyAction(e) {
   return action;
 }
 
-/** Elements whose own keys come first: text fields, and Enter on a link or button. */
+/** Elements whose own keys come first: text fields, Space on a checkbox, and Enter on a link or button. */
 function ownKey(e) {
   const el = e.target;
   if (!(el instanceof Element)) return false;
   if (el.closest('textarea, select, [contenteditable=""], [contenteditable="true"]')) return true;
   if (el.matches('input') && !['checkbox', 'radio', 'button'].includes(el.type)) return true;
+  if (e.key === ' ' && el.matches('input[type=checkbox], input[type=radio]')) return true;
   return e.key === 'Enter' && !!el.closest('a, button');
 }
 
 /**
- * Calls `onAction(action)` for every shortcut pressed on the page. The key's default (scrolling, a checkbox
- * toggled by Space) is prevented unless `onAction` returns false.
+ * Calls `onAction(action)` for every shortcut pressed on the page. The key's default (scrolling by arrows or
+ * Space) is prevented unless `onAction` returns false.
  */
 export function useKeys(onAction) {
   const handler = useRef(onAction);
@@ -78,12 +80,16 @@ export function useKeys(onAction) {
 }
 
 export function ShortcutHelp({ onClose }) {
+  const close = useRef(null);
+  useEffect(() => { close.current?.focus(); }, []);
   return html`<div class="overlay" onClick=${onClose}>
-    <section class="help" role="dialog" aria-label="Pikanäppäimet" onClick=${(e) => e.stopPropagation()}>
+    <section class="help" role="dialog" aria-modal="true" aria-label="Pikanäppäimet"
+        onClick=${(e) => e.stopPropagation()}>
       <h2>Pikanäppäimet</h2>
       <dl>${SHORTCUTS.map(([keys, text]) => html`<dt><kbd>${keys}</kbd></dt><dd>${text}</dd>`)}</dl>
-      <p class="muted">Kortin väri on automaattinen arvio, merkki kortin kulmassa oma päätöksesi.</p>
-      <button onClick=${onClose}>Sulje</button>
+      <p class="muted">Kortin väri on automaattinen arvio, merkki kortin kulmassa oma päätöksesi. Klikkaus valitsee
+        kuvan, kaksoisklikkaus avaa sen.</p>
+      <button ref=${close} onClick=${onClose}>Sulje</button>
     </section>
   </div>`;
 }

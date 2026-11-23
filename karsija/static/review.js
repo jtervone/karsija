@@ -96,9 +96,14 @@ function withShots(shots, list) {
 }
 
 const EMPTY = { eventId: null, data: null, shots: new Map(), groups: [], pending: [], written: [], error: null,
-                notice: null };
+                notice: null, failure: null };
 
-function reduce(state, action) {
+/**
+ * State of `useReview`. `notice`: a passing message (`{ text }`), `failure`: writes the server refused since the
+ * user last dismissed them (`{ text, count }`), kept until dismissed. `written`: answers of the writes stored while
+ * a load was under way, laid over that load's answer.
+ */
+export function reduce(state, action) {
   switch (action.type) {
     case 'load': {
       // writes stored after the request started may be missing from its answer: lay them over it again
@@ -109,18 +114,20 @@ function reduce(state, action) {
                written, error: null };
     }
     case 'loadError':
-      return { ...state, error: action.message, ...(state.eventId === action.eventId ? {} : { data: null }) };
+      return { ...state, error: { eventId: action.eventId, message: action.message } };
     case 'pending':
       return { ...state, pending: [...state.pending, action.op] };
     case 'done':
       return { ...state, shots: withShots(state.shots, action.shots),
                pending: state.pending.filter((op) => op !== action.op),
-               written: [...state.written, { seq: action.seq, shots: action.shots }] };
+               written: action.loading ? [...state.written, { seq: action.seq, shots: action.shots }] : [] };
     case 'failed':
       return { ...state, pending: state.pending.filter((op) => op !== action.op),
-               notice: { error: true, text: action.message } };
+               failure: { text: action.message, count: (state.failure?.count ?? 0) + 1 } };
     case 'notice':
       return { ...state, notice: action.notice };
+    case 'dismiss':
+      return { ...state, failure: null };
     default:
       throw new Error(action.type);
   }
@@ -129,24 +136,27 @@ function reduce(state, action) {
 /**
  * Shots and decisions of event `eventId`, reloaded whenever `version` changes.
  *
- * Returns `{ data, groups, shots, error, notice, decide, accept, undo, clearNotice }`: `shots` maps a shot id to
- * the shot with its decision as last made here; `data` is null while the event loads. Decisions are written one
- * at a time in the order they were made, so an undo always reaches the server after the decision it undoes.
+ * Returns `{ data, groups, shots, error, notice, failure, decide, accept, undo, notify, dismiss }`: `shots` maps a
+ * shot id to
+ * the shot with its decision as last made here; `data` is null while the event loads. Decisions are written one at
+ * a time in the order they were made, so an undo always reaches the server after the decision it undoes.
  */
 export function useReview(eventId, version) {
   const [state, dispatch] = useReducer(reduce, EMPTY);
   const done = useRef(0);                  // writes stored so far
   const chain = useRef(Promise.resolve());
   const undoStack = useRef([]);            // decisions made on this page: { prev: Map shot id -> old decision }
+  const loading = useRef(0);               // loads under way
 
   useEffect(() => { undoStack.current = []; }, [eventId]);
   useEffect(() => {
     let current = true;
     const since = done.current;
+    loading.current += 1;
     api(`/events/${eventId}`).then(
       (data) => current && dispatch({ type: 'load', eventId, data, since }),
       (e) => current && dispatch({ type: 'loadError', eventId, message: e.message }),
-    );
+    ).finally(() => { loading.current -= 1; });
     return () => { current = false; };
   }, [eventId, version]);
 
@@ -162,7 +172,7 @@ export function useReview(eventId, version) {
     chain.current = chain.current.then(send).then(
       (res) => {
         done.current += 1;
-        dispatch({ type: 'done', op, seq: done.current, shots: res.shots });
+        dispatch({ type: 'done', op, seq: done.current, shots: res.shots, loading: loading.current > 0 });
         onDone?.(res);
       },
       (e) => {
@@ -172,10 +182,12 @@ export function useReview(eventId, version) {
     );
   }, []);
 
+  /** Put a write on the undo stack; it comes off again if the server stores nothing (refused, or no batch). */
   const remember = (prev) => {
     const entry = { prev };
     undoStack.current.push(entry);
-    return { onFail: () => { undoStack.current = undoStack.current.filter((e) => e !== entry); } };
+    const drop = () => { undoStack.current = undoStack.current.filter((e) => e !== entry); };
+    return { onDone: (res) => { if (res.batch == null) drop(); }, onFail: drop };
   };
 
   /** Set `user_verdict` and/or `rating` of a shot (null clears). Returns false when nothing changes. */
@@ -216,7 +228,7 @@ export function useReview(eventId, version) {
         let text = null;
         if (res.batch == null) text = 'Ei kumottavaa.';
         else if (!res.shots.some((s) => latest.current.has(s.id))) text = 'Kumottiin päätös toisesta tapahtumasta.';
-        if (text) dispatch({ type: 'notice', notice: { error: false, text } });
+        if (text) dispatch({ type: 'notice', notice: { text } });
       },
       onFail: () => { if (entry) undoStack.current.push(entry); },
       failText: 'Kumoaminen epäonnistui',
@@ -224,10 +236,13 @@ export function useReview(eventId, version) {
     return entry ? [...entry.prev.keys()] : [];
   }, [write]);
 
-  const clearNotice = useCallback(() => dispatch({ type: 'notice', notice: null }), []);
+  /** Show a passing message, or clear it with null. */
+  const notify = useCallback((text) => dispatch({ type: 'notice', notice: text == null ? null : { text } }), []);
+  const dismiss = useCallback(() => dispatch({ type: 'dismiss' }), []);
 
   return {
-    data: ours ? state.data : null, groups: ours ? state.groups : [], shots, error: state.error,
-    notice: state.notice, decide, accept, undo, clearNotice,
+    data: ours ? state.data : null, groups: ours ? state.groups : [], shots,
+    error: state.error?.eventId === eventId ? state.error.message : null,
+    notice: state.notice, failure: state.failure, decide, accept, undo, notify, dismiss,
   };
 }

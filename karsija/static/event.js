@@ -12,6 +12,11 @@ const FILTERS = [
 ];
 const NEIGHBOURS = [-4, 16];         // grid previews loaded ahead of the current shot, behind and ahead
 
+/** After a filter is clicked, give Space back to the shortcuts; a filter reached with Tab keeps its focus. */
+function blurFilter() {
+  setTimeout(() => { if (document.activeElement?.closest('.filters')) document.activeElement.blur(); }, 0);
+}
+
 const preloaded = new Set();
 function preload(url) {
   if (preloaded.has(url)) return;
@@ -44,6 +49,7 @@ function Counts({ ev, shots }) {
     return n;
   }, [shots]);
   const total = shots.size;
+  if (ev.analysed_at == null && total === 0) return html`<span class="badge unanalysed">Ei analysoitu</span>`;
   return html`<span class="muted counts">
     ${fmt(total)} kuvaa · <span class="candidates">${fmt(candidates)} karsittavaa</span> ·
     ${fmt(reviewed)} tarkastettu, ${total - reviewed === 0 && total > 0
@@ -61,7 +67,6 @@ export function EventView({ route, version }) {
   const [help, setHelp] = useState(false);
 
   useEffect(() => { setCursor(null); }, [eventId]);
-  useEffect(() => { if (route.view === 'loupe') setCursor(route.shot); }, [route.view, route.shot]);
 
   // What is shown changes when the filters change or the event reloads, not with each decision: a shot decided
   // under "Vain tarkastamattomat" stays until then, so the cursor does not jump away from it.
@@ -78,20 +83,54 @@ export function EventView({ route, version }) {
 
   usePreload(order, shots, current);
 
-  // the loupe follows the current shot in its address, so a reload or the back button returns to it
+  const grid = `#/event/${eventId}`;
+  const currentGroup = current == null ? null : order.group(current);
+
+  // The loupe and compare views keep the current shot (its group) in their address, so a reload or the back
+  // button returns to it. A new address (a link, Back) moves the cursor first; until the cursor has followed it,
+  // the address is not rewritten.
+  const followed = useRef(null);
   useEffect(() => {
-    if (route.view === 'loupe' && current != null && current !== route.shot) {
-      history.replaceState(null, '', `#/event/${eventId}/loupe/${current}`);
+    if (!data) return;
+    const target = route.view === 'event' ? null : `${route.view} ${route.shot ?? route.group}`;
+    if (target !== followed.current) {
+      followed.current = target;
+      if (route.view === 'loupe' && route.shot !== current) {
+        setCursor(route.shot);
+        return;
+      }
+      if (route.view === 'compare' && currentGroup?.groupId !== route.group) {
+        const g = order.groups.find((x) => x.groupId === route.group);
+        if (g) {
+          setCursor(g.ids[0]);
+          return;
+        }
+      }
     }
-  }, [route.view, route.shot, current, eventId]);
+    let want = null;
+    if (route.view === 'loupe' && current != null) want = `${grid}/loupe/${current}`;
+    if (route.view === 'compare' && currentGroup?.groupId != null) want = `${grid}/compare/${currentGroup.groupId}`;
+    if (want && location.hash !== want) history.replaceState(null, '', want);
+  });
+
+  const toolbar = useRef(null);
+  useEffect(() => {
+    // the cards scroll to just below the toolbar, whose height changes as it wraps
+    const el = toolbar.current;
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(() => {
+      document.documentElement.style.setProperty('--toolbar-h', `${el.offsetHeight}px`);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     if (!review.notice) return undefined;
-    const timer = setTimeout(review.clearNotice, 6000);
+    const timer = setTimeout(() => review.notify(null), 6000);
     return () => clearTimeout(timer);
-  }, [review.notice, review.clearNotice]);
+  }, [review.notice, review.notify]);
 
-  const grid = `#/event/${eventId}`;
   const open = useCallback((id) => { location.hash = `${grid}/loupe/${id}`; }, [grid]);
 
   useKeys((action) => {
@@ -104,11 +143,15 @@ export function EventView({ route, version }) {
       return true;
     }
     if (action.type === 'back') {
-      if (route.view === 'event') return false;
-      location.hash = grid;
+      if (route.view !== 'event') location.hash = grid;
+      else if (review.failure || review.notice) {
+        review.dismiss();
+        review.notify(null);
+      } else return false;
       return true;
     }
-    if (current == null) return false;
+    if (current == null || action.type === 'zoom') return false;     // zoom: the loupe and compare views, later
+    if (action.type === 'open' && route.view !== 'event') return false;
     if (cursor == null) setCursor(current);      // the first unreviewed shot, until then only derived
     switch (action.type) {
       case 'move': setCursor(order.step(current, action.by)); break;
@@ -130,17 +173,15 @@ export function EventView({ route, version }) {
         break;
       }
       case 'open':
-        if (route.view !== 'event') return false;
         open(current);
         break;
-      case 'compare': {
-        const group = order.group(current);
-        if (group?.groupId == null || group.members.length < 2) return false;
-        location.hash = `${grid}/compare/${group.groupId}`;
+      case 'compare':
+        if (currentGroup?.groupId == null || currentGroup.members.length < 2) {
+          review.notify('Kuvalla ei ole ryhmää, jonka kuvia vertailla.');
+        } else location.hash = `${grid}/compare/${currentGroup.groupId}`;
         break;
-      }
       default:
-        return false;     // zoom: the loupe and compare views
+        return false;
     }
     return true;
   });
@@ -152,16 +193,21 @@ export function EventView({ route, version }) {
       <a href="#/">← Kirjasto</a>
       ${route.view !== 'event' && ev && html` · <a href=${grid}>${ev.name}</a>`}
     </p>
-    <header class="toolbar">
+    <header class="toolbar" ref=${toolbar}>
       <h1>${ev ? ev.name : TITLES[route.view]}</h1>
       ${ev && html`<${Counts} ev=${ev} shots=${shots} />`}
-      ${route.view === 'event' && ev && html`<div class="filters">
+      ${route.view === 'event' && ev && html`<div class="filters" onPointerUp=${blurFilter}>
         ${FILTERS.map(([key, label, title]) => html`<label key=${key} title=${title}>
           <input type="checkbox" checked=${filters[key]} onChange=${() => toggle(key)} /> ${label}</label>`)}
       </div>`}
       <button class="help-button" onClick=${() => setHelp(true)} title="Pikanäppäimet (?)">?</button>
-      ${review.notice && html`<div class=${`notice${review.notice.error ? ' error' : ''}`} role="status">
-        ${review.notice.text}</div>`}
+      ${(review.failure || review.notice) && html`<div class="notices">
+        ${review.failure && html`<div class="notice error" role="alert">
+          ${review.failure.text}${review.failure.count > 1 && ` (yhteensä ${review.failure.count} tallentamatta)`}
+          <button class="dismiss" onClick=${review.dismiss} title="Sulje (Esc)" aria-label="Sulje">×</button>
+        </div>`}
+        ${review.notice && html`<div class="notice" role="status">${review.notice.text}</div>`}
+      </div>`}
     </header>
     ${review.error && !data && html`<p class="error">Tapahtumaa ei voi ladata: ${review.error}</p>`}
     ${!data && !review.error && html`<p class="muted">Ladataan…</p>`}
@@ -174,7 +220,12 @@ export function EventView({ route, version }) {
         : html`<${Grid} groups=${shown} shots=${shots} best=${best} cursor=${current} onPick=${setCursor}
             onOpen=${open} />`)}
     ${data && route.view !== 'event' && html`<p class="muted">
-      ${TITLES[route.view]}näkymä tulee myöhemmin. Pikanäppäimet toimivat jo; Esc palaa ruudukkoon.</p>`}
+      ${TITLES[route.view]}näkymä tulee myöhemmin. Siihen asti tässä näkyy nykyinen
+      ${route.view === 'loupe' ? 'kuva' : 'ryhmä'} päätöksineen; pikanäppäimet toimivat zoomausta (Z) lukuun
+      ottamatta, ja Esc palaa ruudukkoon.</p>
+      ${current != null && html`<${Grid} groups=${route.view === 'loupe'
+        ? [{ key: currentGroup.key, members: [current], ids: [current] }] : [currentGroup]}
+        shots=${shots} best=${best} cursor=${current} onPick=${setCursor} onOpen=${open} />`}`}
     ${help && html`<${ShortcutHelp} onClose=${() => setHelp(false)} />`}
   </main>`;
 }

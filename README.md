@@ -59,7 +59,8 @@ red blurry, purple error), with its suggestion (*→ pidä* / *→ hylkää*), t
 also as % of the group's sharpest). Your own decision is a badge in the corner (✓ kept, ✕ rejected and dimmed) and
 the stars at the bottom; without one, the suggestion stands. **Vain ehdokkaat** shows only shots judged similar or
 blurry, **Vain ryhmät** only groups of more than one shot, **Vain tarkastamattomat** only shots without a decision
-(a shot decided meanwhile stays until the filters change). The whole event can be reviewed with the keyboard:
+(a shot decided meanwhile stays until the filters change or the event reloads, e.g. when an analysis ends). A click
+picks a shot, a double-click opens it (like Enter). The whole event can be reviewed with the keyboard:
 
 | Key | |
 |---|---|
@@ -68,17 +69,19 @@ blurry, **Vain ryhmät** only groups of more than one shot, **Vain tarkastamatto
 | P, X | keep, reject |
 | 0–5 | stars |
 | U | back to the suggestion: clears the decision and the stars |
-| Space | accept the suggestion for the group's shots that have no decision yet and go to the next group |
+| Space | accept the suggestion for the group's shots that have no decision yet (also those a filter hides) and go to the next group |
 | Ctrl+Z | undo the last decision (a Space counts as one); again to go further back |
 | Enter, C | open the shot, compare the group's shots |
-| Z | 100 % / fit in those views |
-| Esc | back to the grid |
+| Z | 100 % / fit in those views, once they are done |
+| Esc | back to the grid; in the grid, closes the message under the toolbar |
 | ? | all of these on the page |
 
-Decisions show at once and are saved in the background, one at a time in the order they were made; one the server
-refuses is taken back and its error shown. Ctrl+Z undoes the last decision stored on the server, even one made
-before the page was opened or in another event (the page then says so). The loupe and compare views
-(`#/event/<id>/loupe/<shot>`, `#/event/<id>/compare/<group>`) come later; their keys already work.
+Decisions show at once and are saved in the background, one at a time in the order they were made. One the server
+refuses is taken back, and its error stays under the toolbar until closed (× or Esc), counting further failures.
+Ctrl+Z undoes the last decision stored on the server, even one made before the page was opened or in another event
+(the page then says so). The loupe and compare views
+(`#/event/<id>/loupe/<shot>`, `#/event/<id>/compare/<group>`) come later. Until then they show the current shot
+(or its group) as a card, and every key except Z already works there, so each decision stays visible.
 
 The UI needs no network: Preact and htm are vendored in `karsija/static/vendor/` (versions and licences in its
 README), there is no build step, and the page's Content-Security-Policy lets it load nothing from other sites.
@@ -192,3 +195,5 @@ uv run mypy
 ```
 
 The tests generate a synthetic library; no real photos or network are needed.
+The UI's logic is tested in `tests/js/` with Node's own test runner (`node --test tests/js/`); pytest runs those
+tests too when `node` is installed and skips them otherwise.

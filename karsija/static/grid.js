@@ -11,8 +11,8 @@ export function stars(rating) {
 
 /**
  * One shot. Its colour is the automatic verdict, the corner badge the user's own decision. Re-renders only when its
- * shot (a new object when its decision changes) or being current changes, so moving or deciding touches one or two
- * cards of a long event. The current card scrolls itself into view.
+ * shot (a new object when its decision changes), being current, or its group's best sharpness changes, so moving or
+ * deciding touches one or two cards of a long event. The current card scrolls itself into view.
  */
 class Card extends Component {
   shouldComponentUpdate(next) {
