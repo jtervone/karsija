@@ -20,7 +20,8 @@ from PIL import Image
 
 from karsija import previews
 from karsija import server as server_mod
-from karsija.server import LOOPBACK_HOSTS, Broker, JobRunner, create_app, host_name
+from karsija.library import RawpyMissing
+from karsija.server import LOOPBACK_HOSTS, Broker, JobRunner, create_app, etag_matches, host_name
 from karsija.store import Store
 
 SECRET = b"secret outside the library"
@@ -535,15 +536,33 @@ def test_analysis_writes_previews(server: Server) -> None:
 
 @pytest.mark.parametrize(("size", "dims"), [("grid", (400, 300)), ("full", (800, 600))])   # never scaled up
 def test_preview_sizes(server: Server, size: str, dims: tuple[int, int]) -> None:
-    shot_id = server.shots()["sharp.jpg"]["id"]
-    resp = server.client.get(f"/api/shots/{shot_id}/preview", params={"size": size})
+    url = server.shots()["sharp.jpg"]["preview"][size]
+    resp = server.client.get(url)
     assert resp.status_code == 200 and resp.headers["content-type"] == "image/jpeg"
     assert Image.open(io.BytesIO(resp.content)).size == dims
     assert resp.headers["etag"].endswith(f'-{size}"')
-    assert resp.headers["cache-control"] == f"private, max-age={server_mod.PREVIEW_MAX_AGE}"
-    again = server.client.get(f"/api/shots/{shot_id}/preview", params={"size": size},
-                              headers={"If-None-Match": resp.headers["etag"]})
-    assert again.status_code == 304 and again.headers["etag"] == resp.headers["etag"] and not again.content
+    assert resp.headers["cache-control"] == f"private, max-age={server_mod.PREVIEW_MAX_AGE}, immutable"
+    assert resp.headers["cross-origin-resource-policy"] == "same-origin"
+    assert resp.headers["x-content-type-options"] == "nosniff"
+    etag = resp.headers["etag"]
+    for inm in (etag, f"W/{etag}", f'"other", {etag}', "*"):
+        again = server.client.get(url, headers={"If-None-Match": inm})
+        assert again.status_code == 304 and again.headers["etag"] == etag and not again.content, inm
+    assert server.client.get(url, headers={"If-None-Match": '"other"'}).status_code == 200
+
+
+def test_preview_urls_are_versioned(server: Server) -> None:
+    shot = server.shots()["sharp.jpg"]
+    detail = server.client.get(f"/api/shots/{shot['id']}").json()
+    assert detail["preview"] == shot["preview"] and "sig" not in shot
+    assert set(shot["preview"]) == {"grid", "full"}
+    grid = shot["preview"]["grid"]
+    assert grid.startswith(f"/api/shots/{shot['id']}/preview?size=grid&v=")
+    # without the version (or with another one) the browser must ask again every time
+    for url in (f"/api/shots/{shot['id']}/preview", grid.replace("&v=", "&v=0")):
+        resp = server.client.get(url)
+        assert resp.status_code == 200 and resp.headers["cache-control"] == "private, no-cache"
+        assert resp.headers["etag"] == server.client.get(grid).headers["etag"]
 
 
 def test_preview_default_size_and_errors(server: Server) -> None:
@@ -570,6 +589,8 @@ def test_preview_is_cached_until_the_file_changes(own: Server, monkeypatch: pyte
     os.utime(src, (st.st_atime, st.st_mtime + 10))
     changed = own.client.get(url, headers={"If-None-Match": first.headers["etag"]})
     assert changed.status_code == 200 and changed.headers["etag"] != first.headers["etag"]
+    old_url = own.shots()["sharp.jpg"]["preview"]["grid"]        # not analysed again: the old version
+    assert own.client.get(old_url).headers["cache-control"] == "private, no-cache"
     assert changed.content != first.content and made == ["grid"]
     assert own.client.get(url).content == changed.content and made == ["grid"]
 
@@ -581,7 +602,26 @@ def test_broken_image_preview_is_an_error(own: Server) -> None:
     shot_id = own.shots()["sharp.jpg"]["id"]
     (own.root / EVENT / "sharp.jpg").write_bytes(b"not an image")
     resp = own.client.get(f"/api/shots/{shot_id}/preview")
-    assert resp.status_code == 500 and "esikatselua ei voi tehdä" in resp.json()["detail"]
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "kuvaa ei voi lukea: tiedosto on rikki tai sen muotoa ei tueta"
+
+
+def test_preview_of_a_raw_without_rawpy(own: Server, monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_rawpy(*args: Any) -> None:
+        raise RawpyMissing("rawpy not installed, cannot read RAW")
+
+    monkeypatch.setattr(previews, "make", no_rawpy)
+    shot_id = own.shots()["sharp.jpg"]["id"]
+    src = own.root / EVENT / "sharp.jpg"
+    os.utime(src, (src.stat().st_atime, src.stat().st_mtime + 10))   # not in the cache any more
+    resp = own.client.get(f"/api/shots/{shot_id}/preview")
+    assert (resp.status_code, resp.json()["detail"]) == (500, "RAW-kuvan esikatselu vaatii rawpy-paketin")
+
+
+def test_etag_matches() -> None:
+    assert etag_matches('"a-grid"', '"a-grid"') and etag_matches('W/"a-grid"', '"a-grid"')
+    assert etag_matches('"b", "a-grid"', '"a-grid"') and etag_matches("*", '"a-grid"')
+    assert not etag_matches("", '"a-grid"') and not etag_matches('"a-full"', '"a-grid"')
 
 
 # --------------------------------------------------------------------------- #

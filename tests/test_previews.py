@@ -14,7 +14,8 @@ from PIL import Image, ImageOps
 from karsija import library as library_mod
 from karsija import previews
 from karsija.analysis import analyse_file
-from karsija.previews import SIZES, PreviewCache, default_cache_dir, preview_path
+from karsija.library import RawpyMissing, load_image
+from karsija.previews import SIZES, PreviewCache, UnreadableImage, default_cache_dir, preview_path
 from karsija.store import Store
 
 
@@ -110,6 +111,47 @@ def test_raw_uses_the_embedded_thumbnail(tmp_path: Path, monkeypatch: pytest.Mon
     assert opened == [str(raw)] * 2
     want = np.asarray(Image.fromarray(RGB).convert("L").resize((400, 300), Image.Resampling.LANCZOS), np.float32)
     assert np.abs(got - want).mean() < 8                # the thumbnail, not postprocess() (all black)
+
+
+def portrait_raw(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flip: int, thumb_orientation: int | None) -> Path:
+    """A RAW whose embedded preview is stored as the rotated test image (white half on top)."""
+    jpg = tmp_path / "thumb.jpg"
+    rotated_jpeg(jpg, thumb_orientation or 1)
+    data = jpg.read_bytes()
+    if thumb_orientation is None:
+        data = jpeg_bytes(np.asarray(Image.open(jpg)))            # no EXIF at all
+    raw = tmp_path / "DSC_0003.NEF"
+    raw.write_bytes(b"not a real raw file")
+    monkeypatch.setattr(library_mod, "rawpy", fake_rawpy(SimpleNamespace(format="jpeg", data=data), RGB, [], flip))
+    return raw
+
+
+@pytest.mark.parametrize("thumb_orientation", [None, 1])
+def test_raw_preview_is_turned_by_the_raw_orientation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                      thumb_orientation: int | None) -> None:
+    raw = portrait_raw(tmp_path, monkeypatch, 6, thumb_orientation)        # LibRaw 6 = 90 degrees clockwise
+    assert_upright(PreviewCache(tmp_path / "cache").get(str(raw), [str(raw)], "sig", "grid"), 400)
+    bgr, _ = load_image(raw)
+    assert bgr.shape[:2] == (1024, 682)                                    # analysed upright as well
+
+
+def test_raw_preview_keeps_its_own_orientation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    raw = portrait_raw(tmp_path, monkeypatch, 5, 6)               # the preview's own EXIF wins over the RAW's
+    assert_upright(PreviewCache(tmp_path / "cache").get(str(raw), [str(raw)], "sig", "grid"), 400)
+
+
+def test_raw_without_rawpy_and_broken_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    raw, broken = tmp_path / "DSC_0004.NEF", tmp_path / "broken.jpg"
+    raw.write_bytes(b"not a real raw file")
+    broken.write_bytes(b"not an image")
+    monkeypatch.setattr(library_mod, "rawpy", None)
+    cache = PreviewCache(tmp_path / "cache")
+    with pytest.raises(RawpyMissing):
+        cache.get(str(raw), [str(raw)], "a", "grid")
+    with pytest.raises(UnreadableImage):
+        cache.get(str(broken), [str(broken)], "b", "grid")
+    with pytest.raises(FileNotFoundError):
+        cache.get(str(tmp_path / "gone.jpg"), [str(tmp_path / "gone.jpg")], "c", "grid")
 
 
 def test_raw_jpeg_pair_prefers_the_jpeg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

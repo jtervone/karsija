@@ -21,20 +21,28 @@ JPEG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".heic"}
 RAW_EXT = {".nef", ".nrw", ".cr2", ".cr3", ".arw", ".dng", ".orf", ".rw2", ".raf", ".pef", ".srw"}
 EVENT_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 ANALYSIS_EDGE = 1024          # long edge used for all measurements
+RAW_FLIP = {3: 3, 5: 8, 6: 6}  # LibRaw sizes.flip -> EXIF orientation (180, 90 counter-clockwise, 90 clockwise)
 
 
 # --------------------------------------------------------------------------- #
 # Image loading
 # --------------------------------------------------------------------------- #
+class RawpyMissing(RuntimeError):
+    """A RAW file was to be read but rawpy is not installed."""
+
+
 def open_image(path: Path, draft: int | None = None) -> Image.Image:
     """Decoded image at full size, as stored (EXIF orientation not applied). RAW gives its embedded JPEG preview.
+
+    An embedded preview usually carries no orientation of its own (the camera stores it in the RAW): the RAW's is
+    then set as the image's EXIF orientation, so ``ImageOps.exif_transpose`` turns it upright like a JPEG.
 
     ``draft``: a JPEG may be decoded at a reduced scale, as long as both sides stay at least this many pixels.
     """
     pil: Image.Image
     if path.suffix.lower() in RAW_EXT:
         if rawpy is None:
-            raise RuntimeError("rawpy not installed, cannot read RAW")
+            raise RawpyMissing("rawpy not installed, cannot read RAW")
         with rawpy.imread(str(path)) as raw:
             try:
                 thumb = raw.extract_thumb()
@@ -48,8 +56,11 @@ def open_image(path: Path, draft: int | None = None) -> Image.Image:
             elif thumb is not None and thumb.format == rawpy.ThumbFormat.BITMAP:
                 pil = Image.fromarray(np.asarray(thumb.data))
             else:
-                rgb = raw.postprocess(half_size=True, use_camera_wb=True)
-                pil = Image.fromarray(rgb)
+                rgb = raw.postprocess(half_size=True, use_camera_wb=True)      # already turned upright
+                return Image.fromarray(rgb)
+            flip = RAW_FLIP.get(int(getattr(getattr(raw, "sizes", None), "flip", 0) or 0))
+            if flip is not None and pil.getexif().get(0x0112, 1) == 1:
+                pil.getexif()[0x0112] = flip
     else:
         pil = Image.open(path)
         if draft:

@@ -1,6 +1,7 @@
 """Review server: JSON API under ``/api``, background analysis, progress over SSE, static UI from the package.
 
-All library file access goes through ``library.safe_path``: nothing outside the library root is read or served.
+All library file access goes through ``library.safe_path``: no library file outside the library root is read or
+served. Previews are served from the preview cache (``previews.py``), outside the library.
 """
 
 from __future__ import annotations
@@ -28,15 +29,15 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from karsija import previews
 from karsija.analysis import Shot, analyse_file, group_and_judge
-from karsija.library import JPEG_EXT, RAW_EXT, UnsafePath, collect_shots, find_event_dirs, safe_path
+from karsija.library import JPEG_EXT, RAW_EXT, RawpyMissing, UnsafePath, collect_shots, find_event_dirs, safe_path
 from karsija.store import UNSET, Store
 
 STATIC_DIR = Path(__file__).parent / "static"
 KEEPALIVE = 15.0              # seconds between SSE comments on an idle stream
-PREVIEW_MAX_AGE = 365 * 24 * 3600   # seconds a browser may keep a preview without asking again
+PREVIEW_MAX_AGE = 365 * 24 * 3600   # seconds a browser may keep a preview of a versioned URL without asking again
 SUGGESTION = {"best": "keep", "keep": "keep", "similar": "reject", "blurry": "reject"}   # auto verdict -> decision
 
-_SHOT_COLS = ("id, event_id, key, files, taken, sharp, sharp_global, clip_hi, clip_lo, error, group_id, "
+_SHOT_COLS = ("id, event_id, key, files, sig, taken, sharp, sharp_global, clip_hi, clip_lo, error, group_id, "
               "auto_verdict, reason, user_verdict, rating, decided_at, state")
 
 
@@ -112,6 +113,12 @@ def inside_root(root: Path, files: list[str]) -> bool:
     except (UnsafePath, ValueError):
         return False
     return True
+
+
+def etag_matches(if_none_match: str, etag: str) -> bool:
+    """``If-None-Match`` names ``etag`` (weak or strong) or is ``*``."""
+    tags = [t.strip() for t in if_none_match.split(",")]
+    return "*" in tags or etag in (t.removeprefix("W/") for t in tags)
 
 
 def job_error(e: Exception) -> str:
@@ -357,6 +364,9 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
         key = d.pop("key")
         d["name"], d["path"] = Path(key).name, rel(key)
         d["files"] = [rel(f) for f in json.loads(d["files"])]
+        # versioned preview URLs: a changed file gets new ones, so the browser may cache them for long
+        version = previews.etag(d.pop("sig"))
+        d["preview"] = {size: f"/api/shots/{d['id']}/preview?size={size}&v={version}" for size in previews.SIZES}
         if "exif" in d:
             d["exif"] = json.loads(d["exif"]) if d["exif"] else {}
         return d
@@ -463,9 +473,14 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
 
     @app.get("/api/shots/{shot_id}/preview")
     def preview(shot_id: int, store: Db, request: Request,
-                size: Literal["grid", "full"] = "grid") -> Response:
+                size: Literal["grid", "full"] = "grid", v: str | None = None) -> Response:
         """Upright JPEG of the shot, long edge 400 px (``grid``) or 2560 px (``full``). Made on first request if the
-        analysis has not made it yet. The ``ETag`` changes whenever a file of the shot changes."""
+        analysis has not made it yet. The ``ETag`` changes whenever a file of the shot changes.
+
+        Use the URLs of the shot's ``preview`` field: their ``v`` names the version, and a response whose ``v`` is
+        the current one may be cached for a year. Without ``v`` (or with an old one) the browser revalidates every
+        time (``no-cache``, then ``304`` by ``ETag``).
+        """
         row = store.db.execute("SELECT key, files FROM shots WHERE id = ?", (shot_id,)).fetchone()
         if row is None:
             raise HTTPException(404, "kuvaa ei ole")
@@ -476,15 +491,26 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
             sig = Store.signature(files)
         except OSError:
             raise HTTPException(404, "tiedostoa ei ole") from None
-        headers = {"ETag": f'"{previews.etag(sig)}-{size}"', "Cache-Control": f"private, max-age={PREVIEW_MAX_AGE}"}
-        if headers["ETag"] in [t.strip() for t in request.headers.get("if-none-match", "").split(",")]:
+        version = previews.etag(sig)
+        headers = {
+            "ETag": f'"{version}-{size}"',
+            "Cache-Control": f"private, max-age={PREVIEW_MAX_AGE}, immutable" if v == version
+            else "private, no-cache",
+            "Cross-Origin-Resource-Policy": "same-origin",       # other sites cannot embed (and probe) previews
+            "X-Content-Type-Options": "nosniff",
+        }
+        if etag_matches(request.headers.get("if-none-match", ""), headers["ETag"]):
             return Response(status_code=304, headers=headers)
         try:
             path = preview_cache.get(key, files, sig, size)
         except FileNotFoundError:
             raise HTTPException(404, "tiedostoa ei ole") from None
-        except Exception as e:  # noqa: BLE001
-            raise HTTPException(500, f"esikatselua ei voi tehdä: {type(e).__name__}: {e}") from None
+        except RawpyMissing:
+            raise HTTPException(500, "RAW-kuvan esikatselu vaatii rawpy-paketin") from None
+        except previews.UnreadableImage:
+            raise HTTPException(422, "kuvaa ei voi lukea: tiedosto on rikki tai sen muotoa ei tueta") from None
+        except OSError as e:
+            raise HTTPException(500, f"esikatselua ei voi tallentaa välimuistiin: {e.strerror or e}") from None
         return FileResponse(path, media_type="image/jpeg", headers=headers)
 
     @app.patch("/api/shots/{shot_id}")

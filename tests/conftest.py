@@ -84,8 +84,9 @@ def preview_cache_home(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Pat
 
 
 class FakeRaw:
-    def __init__(self, thumb: SimpleNamespace | None, rgb: np.ndarray):
+    def __init__(self, thumb: SimpleNamespace | None, rgb: np.ndarray, flip: int = 0):
         self.thumb, self.rgb = thumb, rgb
+        self.sizes = SimpleNamespace(flip=flip)      # LibRaw orientation of the RAW
 
     def __enter__(self) -> FakeRaw:
         return self
@@ -102,10 +103,10 @@ class FakeRaw:
         return self.rgb
 
 
-def fake_rawpy(thumb: SimpleNamespace | None, rgb: np.ndarray, opened: list[str]) -> SimpleNamespace:
+def fake_rawpy(thumb: SimpleNamespace | None, rgb: np.ndarray, opened: list[str], flip: int = 0) -> SimpleNamespace:
     def imread(path: str) -> FakeRaw:
         opened.append(path)
-        return FakeRaw(thumb, rgb)
+        return FakeRaw(thumb, rgb, flip)
 
     return SimpleNamespace(imread=imread, ThumbFormat=SimpleNamespace(JPEG="jpeg", BITMAP="bitmap"))
 

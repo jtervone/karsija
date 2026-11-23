@@ -36,7 +36,7 @@ karsija scan --help                              # all options and thresholds
 uv run karsija serve ~/Kuvat                     # opens http://127.0.0.1:8765/ in the browser
 karsija serve ~/Kuvat --port 9000 --no-browser
 karsija serve ~/Kuvat --docs                     # also the API test page at /docs
-karsija serve --help                             # --host, --allow-host, --workers, --db
+karsija serve --help                             # --host, --allow-host, --workers, --db, --previews
 ```
 
 The browser UI is not there yet: the page it opens is a placeholder. Until it arrives, the server is used
@@ -71,12 +71,20 @@ Decisions are stored in the server's database only. They are not written to XMP 
 `curl -X POST localhost:8765/api/decisions/undo -H 'Content-Type: application/json'`).
 
 Previews: `GET /api/shots/{id}/preview?size=grid` (long edge 400 px, the default) or `size=full` (2560 px) returns
-an upright JPEG, never larger than the original. A RAW+JPEG pair is previewed from the JPEG, a RAW alone from its
-embedded preview. The analysis writes both sizes as it goes; a missing one is made on the first request. They are
-kept in `$XDG_CACHE_HOME/karsija/previews/` (by default `~/.cache/karsija/previews/`), one file per shot and size,
-and are made again when a file of the shot changes. Old previews are not removed; the folder can be deleted at
-any time. A browser may keep a preview for a year without asking again (`Cache-Control: max-age`), then revalidates
-it by its `ETag`.
+an upright JPEG, never larger than the image it is made from. A RAW+JPEG pair is previewed from the JPEG, a RAW
+alone from its embedded preview, which is often smaller than 2560 px, so `full` can be smaller too. The analysis
+writes both sizes as it goes; a missing one is made on the first request. They are kept in
+`$XDG_CACHE_HOME/karsija/previews/` (by default `~/.cache/karsija/previews/`; choose another folder with
+`serve --previews DIR`), one file per shot and size, typically 0.5–1 MB per shot, nearly all of it the full size.
+A preview is made again when a file of the shot changes. Old previews are not removed; the folder can be deleted
+at any time.
+
+Every shot in the JSON has a `preview` field with the URL of each size, e.g.
+`{"grid": "/api/shots/12/preview?size=grid&v=…", "full": "…"}`. Its `v` names the current version of the shot's
+files: the browser may keep that response for a year, and a changed file gets a new URL after the next analysis.
+Any other URL (no `v`, or an old one) is answered with `Cache-Control: no-cache`, so the browser asks again each
+time and gets `304 Not Modified` by the `ETag` while the files are unchanged. A file that cannot be read gives
+`422 kuvaa ei voi lukea`, a missing file `404`.
 
 ```sh
 curl -o grid.jpg 'localhost:8765/api/shots/1/preview?size=grid'
@@ -94,8 +102,9 @@ library and record decisions. Writes from other web sites are refused, and reque
 The server never writes into the library. By default its state database lives at
 `~/.local/share/karsija/<hash>.sqlite` (`$XDG_DATA_HOME/karsija/` when that is set). `<hash>` is the first 16 hex digits of the
 SHA-256 of the resolved library root, so every library gets its own database. Use `--db` to choose another file.
-This database is separate from the `scan` command's `karsija.sqlite`. Only image files inside the library root
-are served; `..`, absolute paths and symlinks that lead outside it are rejected. Shots whose files have
+This database is separate from the `scan` command's `karsija.sqlite`. Previews go to `~/.cache/karsija/previews/`
+(see above; `--previews` chooses another folder). Only image files inside the library root (and previews made from
+them) are served; `..`, absolute paths and symlinks that lead outside it are rejected. Shots whose files have
 disappeared are left out of the event; if they come back, their decisions are still there.
 
 > Before the package, the tool was a single script run as `python karsija.py ROOT`.
