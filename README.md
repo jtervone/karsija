@@ -39,13 +39,23 @@ karsija serve ~/Kuvat --docs                     # also the API test page at /do
 karsija serve --help                             # --host, --allow-host, --workers, --db, --previews
 ```
 
-The browser UI is not there yet: the page it opens is a placeholder. Until it arrives, the server is used
-through its JSON API. With `--docs`, the API is listed and can be tried out at `/docs`. That page loads Swagger UI
-from cdn.jsdelivr.net, so it is off by default. Analysis does not start on its own:
+The page it opens is **Kirjasto**: the event folders by year, with each event's shot count, cull candidates
+(shots judged blurry or similar) and how many shots are reviewed and unreviewed. Events the server has not
+analysed yet are marked *Ei analysoitu*. Analysis does not start on its own: **Analysoi** analyses one event,
+**Analysoi kaikki** the whole library, and a progress bar follows it; the counts update when it finishes. The
+event, loupe and compare views (`#/event/<id>`, `#/event/<id>/loupe/<shot>`, `#/event/<id>/compare/<group>`) come
+later.
+
+The UI needs no network: Preact and htm are vendored in `karsija/static/vendor/` (versions and licences in its
+README), there is no build step, and the page's Content-Security-Policy lets it load nothing from other sites.
+Stopping the server (Ctrl+C) waits at most two seconds for open pages to let go.
+
+The server can also be used through its JSON API. With `--docs`, the API is listed and can be tried out at
+`/docs`. That page loads Swagger UI from cdn.jsdelivr.net, so it is off by default.
 
 ```sh
 curl -X POST localhost:8765/api/analyse -H 'Content-Type: application/json' -d '{"scope": "all"}'
-curl localhost:8765/api/library                  # events with shot counts; an event id also works as "scope"
+curl localhost:8765/api/library                  # events with shot counts and analysed_at; an event id also works as "scope"
 ```
 
 Progress is pushed over server-sent events (`/api/events/stream`) and can be polled at `/api/jobs/{id}`. A shot

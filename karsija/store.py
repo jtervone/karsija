@@ -8,6 +8,8 @@ by the review server (``karsija serve``), every change also goes into
 analyses. The ``scan`` command writes neither. ``settings`` overrides
 ``analysis.DEFAULT_SETTINGS`` for the server; nothing writes it yet.
 
+``events.analysed_at``: when a server analysis that covered the event last finished, NULL if none has.
+
 ``shots.state``: ``present`` (in its event folder), ``moved`` (moved into the
 reject folder by ``scan --move``) or ``missing`` (gone from the folder when the
 server last analysed the event; it keeps its decisions in case it comes back).
@@ -21,6 +23,7 @@ import os
 import re
 import sqlite3
 import time
+from collections.abc import Collection
 from dataclasses import fields
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -30,14 +33,15 @@ from karsija.library import EVENT_DIR_RE, JPEG_EXT, read_exif
 
 CACHE_VERSION = 4
 RAW_CACHE_VERSION = 5         # shots without a JPEG: 5 = analysed upright, turned by the RAW's own orientation
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
     id           INTEGER PRIMARY KEY,
     rel_path     TEXT NOT NULL UNIQUE,
     year         INTEGER NOT NULL,
-    name         TEXT NOT NULL
+    name         TEXT NOT NULL,
+    analysed_at  REAL                           -- end of the last server analysis that covered the event
 );
 CREATE TABLE IF NOT EXISTS shots (
     id           INTEGER PRIMARY KEY,
@@ -119,6 +123,8 @@ class Store:
             raise RuntimeError(f"{path}: tietokannan versio {version} on uudempi kuin tämä karsija ({SCHEMA_VERSION})")
         if version == 1:
             self._upgrade_from_1()
+        if version in (1, 2):
+            self._upgrade_to_3()
         self.db.executescript(SCHEMA)
         if version < SCHEMA_VERSION:
             self.db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -137,6 +143,17 @@ class Store:
             DROP TABLE shots_v1;
             COMMIT;""")
         self.db.execute("PRAGMA foreign_keys = ON")
+
+    def _upgrade_to_3(self) -> None:
+        """Schema 3 records when an event was analysed. Events with judged shots count as analysed now."""
+        if "analysed_at" not in {r[1] for r in self.db.execute("PRAGMA table_info(events)")}:   # not half-upgraded
+            self.db.execute("ALTER TABLE events ADD COLUMN analysed_at REAL")
+        self.db.execute(
+            "UPDATE events SET analysed_at = ? "
+            "WHERE EXISTS (SELECT 1 FROM shots WHERE event_id = events.id AND auto_verdict IS NOT NULL)",
+            (time.time(),),
+        )
+        self.db.commit()
 
     @staticmethod
     def signature(files: list[str]) -> str:
@@ -229,6 +246,9 @@ class Store:
             "UPDATE shots SET group_id = ?, auto_verdict = ?, reason = ? WHERE key = ?",
             [(s.group if s.group >= 0 else None, s.verdict, s.reason, s.key) for s in shots],
         )
+
+    def mark_analysed(self, event_ids: Collection[int], when: float) -> None:
+        self.db.executemany("UPDATE events SET analysed_at = ? WHERE id = ?", [(when, i) for i in event_ids])
 
     def mark_moved(self, keys: list[str]) -> None:
         """Record that the files of these shots were moved into the reject folder."""

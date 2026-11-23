@@ -3,17 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
 <title>karsija</title>
-<style>
-body{font-family:system-ui,sans-serif;background:#16181c;color:#ddd;margin:0;padding:1.5rem}
-a{color:#8ab4f8}
-</style>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="app.css">
+<script type="module" src="app.js"></script>
 </head>
 <body>
-<h1>karsija</h1>
-<p>Palvelin on käynnissä. Käyttöliittymä tulee myöhemmin; siihen asti palvelinta käytetään rajapinnan
-<code>/api</code> kautta. Rajapinnan kokeilusivu <a href="/docs">/docs</a> on käytössä, kun palvelin käynnistetään
-valitsimella <code>--docs</code>. Analyysi ei käynnisty itsestään: aloita se kutsulla
-<code>POST /api/analyse</code>.</p>
+<div id="app"></div>
+<noscript><p class="page">karsija tarvitsee JavaScriptin.</p></noscript>
 </body>
 </html>

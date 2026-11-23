@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import re
 import shutil
 import sqlite3
 import threading
@@ -172,6 +173,35 @@ def test_settings_defaults(server: Server) -> None:
 def test_static_index(server: Server) -> None:
     resp = server.client.get("/")
     assert resp.status_code == 200 and "karsija" in resp.text
+    assert '<script type="module" src="app.js">' in resp.text
+
+
+@pytest.mark.parametrize("path", ["/", "/app.js", "/app.css", "/vendor/preact.js"])
+def test_ui_loads_nothing_from_other_origins(server: Server, path: str) -> None:
+    resp = server.client.get(path)
+    assert resp.status_code == 200
+    csp = {d.split()[0]: d.split()[1:] for d in resp.headers["content-security-policy"].split("; ")}
+    assert csp["default-src"] == ["'self'"] and csp["img-src"] == ["'self'", "data:"]
+    assert resp.headers["cache-control"] == "no-cache"
+
+
+def test_ui_files_refer_to_no_other_origin() -> None:
+    """The page works offline: no file of the UI names a URL of another site (the policy would block it anyway)."""
+    files = [p for p in server_mod.STATIC_DIR.rglob("*") if p.suffix in (".html", ".js", ".css")]
+    assert len(files) >= 8
+    for p in files:
+        text = p.read_text().replace("http://www.w3.org/", "")    # Preact's SVG and MathML namespace names
+        assert not re.search(r"""(?:https?:)?//[a-z0-9.-]+\.[a-z]{2,}/""", text, re.I), p
+        for target in re.findall(r"""(?:\bfrom|\bimport)\s*["']([^"']+)["']|(?:src|href)=["']([^"']+)["']""", text):
+            ref = next(t for t in target if t)
+            assert ref.startswith(("./", "data:", "#")) or not re.match(r"[a-z]+:|/", ref), (p, ref)
+            if not ref.startswith(("data:", "#")):
+                assert (p.parent / ref).is_file(), (p, ref)
+
+
+def test_ui_routes_have_no_server_side_paths(server: Server) -> None:
+    """The router works on the hash: the server only ever serves the page itself."""
+    assert server.client.get("/event/1").status_code == 404
 
 
 # --------------------------------------------------------------------------- #
@@ -674,6 +704,18 @@ def test_missing_shot_leaves_the_event(own: Server) -> None:
     back = own.shots()[gone]
     assert (back["state"], back["user_verdict"], back["rating"]) == ("present", "keep", 2)
     assert back["auto_verdict"] in ("best", "similar") and back["group_id"] == group
+
+
+def test_library_shows_which_events_are_analysed(own: Server) -> None:
+    (own.root / "2025" / "2025-08-01-empty").mkdir()
+    events = {ev["name"]: ev for ev in own.client.get("/api/library").json()["years"][0]["events"]}
+    assert events[EVENT.name]["analysed_at"] == own.job["finished"]
+    assert events["2025-08-01-empty"]["analysed_at"] is None
+    assert events["2025-08-01-empty"]["shots"] == 0
+
+    job = analyse(own, "all")
+    events = {ev["name"]: ev for ev in own.client.get("/api/library").json()["years"][0]["events"]}
+    assert events[EVENT.name]["analysed_at"] == events["2025-08-01-empty"]["analysed_at"] == job["finished"]
 
 
 def test_next_analysis_uses_stored_settings(own: Server) -> None:
