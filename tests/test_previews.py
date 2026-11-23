@@ -32,7 +32,7 @@ def assert_upright(preview: Path, edge: int) -> None:
     """The rotated test image shown upright: portrait, the white half on the right."""
     with Image.open(preview) as img:
         assert img.size == (round(edge * 2 / 3), edge)
-        assert img.getexif().get(0x0112, 1) == 1          # nothing left for a viewer to rotate
+        assert img.getexif().get(0x0112, 1) == 1  # nothing left for a viewer to rotate
         px = np.asarray(img.convert("L"), np.float32)
     w = px.shape[1]
     assert px[:, : w // 2 - 4].mean() < 20 and px[:, w // 2 + 4 :].mean() > 235
@@ -56,7 +56,7 @@ def test_rotated_exif_gives_an_upright_preview(tmp_path: Path, size: str) -> Non
     src = tmp_path / "rot.jpg"
     rotated_jpeg(src)
     dest = PreviewCache(tmp_path / "cache").get(str(src), [str(src)], "sig", size)
-    assert_upright(dest, min(SIZES[size], 1200))                  # never scaled up
+    assert_upright(dest, min(SIZES[size], 1200))  # never scaled up
 
 
 def test_preview_matches_exif_transpose(tmp_path: Path) -> None:
@@ -89,7 +89,7 @@ def test_analysis_survives_a_failing_preview(tmp_path: Path) -> None:
     src = tmp_path / "rot.jpg"
     rotated_jpeg(src)
     (tmp_path / "file").write_bytes(b"")
-    shot = analyse_file(str(src), [str(src)], (tmp_path / "file", "sig"))     # cache dir cannot be created
+    shot = analyse_file(str(src), [str(src)], (tmp_path / "file", "sig"))  # cache dir cannot be created
     assert not shot.error and shot.sharp >= 0
 
 
@@ -120,17 +120,20 @@ def test_raw_uses_the_embedded_thumbnail(tmp_path: Path, monkeypatch: pytest.Mon
     raw = tmp_path / "DSC_0001.NEF"
     raw.write_bytes(b"not a real raw file")
     opened: list[str] = []
-    monkeypatch.setattr(library_mod, "rawpy", fake_rawpy(SimpleNamespace(format="jpeg", data=jpeg_bytes(RGB)),
-                                                         np.zeros((10, 10, 3), np.uint8), opened))
+    monkeypatch.setattr(
+        library_mod,
+        "rawpy",
+        fake_rawpy(SimpleNamespace(format="jpeg", data=jpeg_bytes(RGB)), np.zeros((10, 10, 3), np.uint8), opened),
+    )
     cache = PreviewCache(tmp_path / "cache")
     with Image.open(cache.get(str(raw), [str(raw)], "sig", "grid")) as grid:
         assert grid.size == (400, 300)
         got = np.asarray(grid.convert("L"), np.float32)
     with Image.open(cache.get(str(raw), [str(raw)], "sig", "full")) as full:
-        assert full.size == (1600, 1200)                # the thumbnail at full size, not the analysis 1024 px
+        assert full.size == (1600, 1200)  # the thumbnail at full size, not the analysis 1024 px
     assert opened == [str(raw)] * 2
     want = np.asarray(Image.fromarray(RGB).convert("L").resize((400, 300), Image.Resampling.LANCZOS), np.float32)
-    assert np.abs(got - want).mean() < 8                # the thumbnail, not postprocess() (all black)
+    assert np.abs(got - want).mean() < 8  # the thumbnail, not postprocess() (all black)
 
 
 def portrait_raw(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flip: int, thumb_orientation: int | None) -> Path:
@@ -139,7 +142,7 @@ def portrait_raw(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flip: int, thu
     rotated_jpeg(jpg, thumb_orientation or 1)
     data = jpg.read_bytes()
     if thumb_orientation is None:
-        data = jpeg_bytes(np.asarray(Image.open(jpg)))            # no EXIF at all
+        data = jpeg_bytes(np.asarray(Image.open(jpg)))  # no EXIF at all
     raw = tmp_path / "DSC_0003.NEF"
     raw.write_bytes(b"not a real raw file")
     monkeypatch.setattr(library_mod, "rawpy", fake_rawpy(SimpleNamespace(format="jpeg", data=data), RGB, [], flip))
@@ -147,16 +150,17 @@ def portrait_raw(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flip: int, thu
 
 
 @pytest.mark.parametrize("thumb_orientation", [None, 1])
-def test_raw_preview_is_turned_by_the_raw_orientation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-                                                      thumb_orientation: int | None) -> None:
-    raw = portrait_raw(tmp_path, monkeypatch, 6, thumb_orientation)        # LibRaw 6 = 90 degrees clockwise
+def test_raw_preview_is_turned_by_the_raw_orientation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, thumb_orientation: int | None
+) -> None:
+    raw = portrait_raw(tmp_path, monkeypatch, 6, thumb_orientation)  # LibRaw 6 = 90 degrees clockwise
     assert_upright(PreviewCache(tmp_path / "cache").get(str(raw), [str(raw)], "sig", "grid"), 400)
     bgr, _ = load_image(raw)
-    assert bgr.shape[:2] == (1024, 682)                                    # analysed upright as well
+    assert bgr.shape[:2] == (1024, 682)  # analysed upright as well
 
 
 def test_raw_preview_keeps_its_own_orientation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    raw = portrait_raw(tmp_path, monkeypatch, 5, 6)               # the preview's own EXIF wins over the RAW's
+    raw = portrait_raw(tmp_path, monkeypatch, 5, 6)  # the preview's own EXIF wins over the RAW's
     assert_upright(PreviewCache(tmp_path / "cache").get(str(raw), [str(raw)], "sig", "grid"), 400)
 
 
@@ -209,7 +213,7 @@ def test_cached_preview_is_not_made_again(tmp_path: Path, monkeypatch: pytest.Mo
     assert first == again and made == ["grid"]
 
     st = src.stat()
-    os.utime(src, (st.st_atime, st.st_mtime + 10))       # same bytes, new mtime: a new signature
+    os.utime(src, (st.st_atime, st.st_mtime + 10))  # same bytes, new mtime: a new signature
     changed = cache.get(str(src), [str(src)], Store.signature([str(src)]), "grid")
     assert changed != first and changed.exists() and made == ["grid", "grid"]
 
@@ -228,11 +232,13 @@ def test_concurrent_requests_make_the_preview_once(tmp_path: Path, monkeypatch: 
 
     monkeypatch.setattr(previews, "make", slow_make)
     results: list[Path] = []
-    threads = [threading.Thread(target=lambda: results.append(cache.get(str(src), [str(src)], "sig", "full")))
-               for _ in range(8)]
+    threads = [
+        threading.Thread(target=lambda: results.append(cache.get(str(src), [str(src)], "sig", "full")))
+        for _ in range(8)
+    ]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
     assert made == ["full"] and len(set(results)) == 1 and len(results) == 8
-    assert [p.name for p in (tmp_path / "cache").iterdir()] == [results[0].name]     # no temporary files left
+    assert [p.name for p in (tmp_path / "cache").iterdir()] == [results[0].name]  # no temporary files left

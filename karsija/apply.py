@@ -52,12 +52,12 @@ def default_undone_dir() -> Path:
 
 @dataclass
 class Op:
-    kind: str                       # xmp_create, xmp_update or move
+    kind: str  # xmp_create, xmp_update or move
     shot_id: int
-    src: Path                       # the sidecar written, or the file moved
-    dst: Path | None = None         # move: where to
-    backup: str | None = None       # xmp_update: the content before
-    new: str | None = None          # xmp ops: the content written
+    src: Path  # the sidecar written, or the file moved
+    dst: Path | None = None  # move: where to
+    backup: str | None = None  # xmp_update: the content before
+    new: str | None = None  # xmp ops: the content written
 
     @property
     def new_sha256(self) -> str | None:
@@ -70,7 +70,7 @@ class Plan:
     folder: Path
     ops: list[Op] = field(default_factory=list)
     unreviewed: int = 0
-    user_values: list[Path] = field(default_factory=list)     # sidecars with the user's own rating or label
+    user_values: list[Path] = field(default_factory=list)  # sidecars with the user's own rating or label
     conflicts: list[tuple[Path, str]] = field(default_factory=list)
     token: str = ""
 
@@ -99,7 +99,9 @@ def build_plan(store: Store, root: Path, event_id: int) -> Plan:
         plan.conflicts.append((folder / REJECT_DIR, problem))
     rows = store.db.execute(
         "SELECT id, key, files, auto_verdict, user_verdict, rating FROM shots "
-        "WHERE event_id = ? AND state = 'present' ORDER BY key", (event_id,)).fetchall()
+        "WHERE event_id = ? AND state = 'present' ORDER BY key",
+        (event_id,),
+    ).fetchall()
     for shot_id, key, files_json, auto, verdict, rating in rows:
         if verdict is None:
             plan.unreviewed += 1
@@ -118,8 +120,9 @@ def reject_dir_problem(reject_dir: Path) -> str | None:
     return None
 
 
-def _plan_shot(plan: Plan, root: Path, shot_id: int, key: str, files: list[str], auto: str | None, verdict: str,
-               rating: int | None) -> None:
+def _plan_shot(
+    plan: Plan, root: Path, shot_id: int, key: str, files: list[str], auto: str | None, verdict: str, rating: int | None
+) -> None:
     if not inside_root(root, [key, *files]):
         plan.conflicts.append((Path(key), "polku ei ole kirjastossa"))
         return
@@ -127,7 +130,7 @@ def _plan_shot(plan: Plan, root: Path, shot_id: int, key: str, files: list[str],
         plan.conflicts.extend((Path(f), "tiedostoa ei ole; analysoi tapahtuma uudelleen") for f in missing)
         return
     values = xmp_values(auto or "", verdict, rating)
-    assert values is not None                       # a user decision always gives values
+    assert values is not None  # a user decision always gives values
     try:
         # a keep without stars of the user's own must not replace a rating the user gave in another program
         changes = xmp_changes(key, *values, files=files, keep_user_values=verdict == "keep" and rating is None)
@@ -169,6 +172,7 @@ def shot_files(files: list[str], created: Any = ()) -> list[Path]:
 
 def _token(plan: Plan) -> str:
     """Binds a confirmation to the plan: any change in what would be done, or in the files moved, gives another."""
+
     def stat(p: Path) -> list[int] | None:
         try:
             st = os.lstat(p)
@@ -176,10 +180,24 @@ def _token(plan: Plan) -> str:
             return None
         return [st.st_size, st.st_mtime_ns]
 
-    data = [plan.event_id, plan.unreviewed, [str(p) for p in plan.user_values],
-            [[str(p), r] for p, r in plan.conflicts],
-            [[op.kind, op.shot_id, str(op.src), str(op.dst), op.backup and sha256(op.backup), op.new_sha256,
-              stat(op.src) if op.kind == "move" else None] for op in plan.ops]]
+    data = [
+        plan.event_id,
+        plan.unreviewed,
+        [str(p) for p in plan.user_values],
+        [[str(p), r] for p, r in plan.conflicts],
+        [
+            [
+                op.kind,
+                op.shot_id,
+                str(op.src),
+                str(op.dst),
+                op.backup and sha256(op.backup),
+                op.new_sha256,
+                stat(op.src) if op.kind == "move" else None,
+            ]
+            for op in plan.ops
+        ],
+    ]
     return hashlib.sha256(json.dumps(data).encode()).hexdigest()[:32]
 
 
@@ -208,6 +226,7 @@ def _rel(root: Path) -> Callable[[Path | str], str]:
             return Path(p).relative_to(root).as_posix()
         except ValueError:
             return str(p)
+
     return rel
 
 
@@ -225,22 +244,27 @@ def apply(store: Store, root: Path, plan: Plan) -> int:
     if not plan.ops:
         raise ApplyConflict("ei toteutettavaa: tapahtumassa ei ole hylättyjä kuvia eikä kirjoitettavia XMP:itä")
     reject_dir = plan.folder / REJECT_DIR
-    if problem := reject_dir_problem(reject_dir):          # made since the plan: the token does not cover it
+    if problem := reject_dir_problem(reject_dir):  # made since the plan: the token does not cover it
         raise ApplyConflict(f"{reject_dir}: {problem}")
     created_dir = not reject_dir.exists()
-    cur = store.db.execute("INSERT INTO applies (event_id, status, created_dir, started) VALUES (?, 'running', ?, ?)",
-                           (plan.event_id, int(created_dir), time.time()))
+    cur = store.db.execute(
+        "INSERT INTO applies (event_id, status, created_dir, started) VALUES (?, 'running', ?, ?)",
+        (plan.event_id, int(created_dir), time.time()),
+    )
     apply_id = int(cur.lastrowid or 0)
     log = reject_dir / f"karsija-apply-{apply_id}.json"
-    if os.path.lexists(log):                # e.g. a symlink: the log would be written where it points
+    if os.path.lexists(log):  # e.g. a symlink: the log would be written where it points
         store.db.rollback()
         raise ApplyConflict(f"{log} on jo olemassa; siirrä tai nimeä se ensin")
     store.db.execute("UPDATE applies SET log = ? WHERE id = ?", (str(log), apply_id))
     store.db.executemany(
         "INSERT INTO apply_ops (apply_id, seq, kind, shot_id, src, dst, backup, new_sha256) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        [(apply_id, seq, op.kind, op.shot_id, str(op.src), op.dst and str(op.dst), op.backup, op.new_sha256)
-         for seq, op in enumerate(plan.ops)])
+        [
+            (apply_id, seq, op.kind, op.shot_id, str(op.src), op.dst and str(op.dst), op.backup, op.new_sha256)
+            for seq, op in enumerate(plan.ops)
+        ],
+    )
     store.commit()
 
     done = 0
@@ -304,7 +328,7 @@ def _move(src: Path, dst: Path) -> None:
     try:
         os.unlink(src)
     except OSError:
-        os.unlink(dst)                      # the link just made: the file stays where it was
+        os.unlink(dst)  # the link just made: the file stays where it was
         raise
 
 
@@ -312,13 +336,14 @@ def _finish(store: Store, root: Path, apply_id: int, plan: Plan, done: int, stat
     # A decision carried out in the library is no longer undone from the grid (Ctrl+Z): that would leave a moved
     # shot undecided, or a sidecar out of step with the database. Palauta karsitut reverses it instead.
     store.forget_decisions({op.shot_id for op in plan.ops[:done]})
-    store.db.execute("UPDATE applies SET status = ?, error = ?, finished = ? WHERE id = ?",
-                     (status, error, time.time(), apply_id))
+    store.db.execute(
+        "UPDATE applies SET status = ?, error = ?, finished = ? WHERE id = ?", (status, error, time.time(), apply_id)
+    )
     store.commit()
     try:
         write_log(store, root, apply_id)
     except OSError:
-        pass                        # the database has it all; the file is a copy for reading by hand
+        pass  # the database has it all; the file is a copy for reading by hand
 
 
 def write_log(store: Store, root: Path, apply_id: int, path: Path | None = None) -> None:
@@ -327,28 +352,46 @@ def write_log(store: Store, root: Path, apply_id: int, path: Path | None = None)
     assert info is not None
     rel = _rel(root)
     ops = store.db.execute(
-        "SELECT seq, kind, shot_id, src, dst, backup, new_sha256, done FROM apply_ops WHERE apply_id = ? "
-        "ORDER BY seq", (apply_id,)).fetchall()
-    data = {**info, "root": str(root), "ops": [
-        {"seq": seq, "kind": kind, "shot_id": shot_id, "src": rel(src), "dst": dst and rel(dst), "backup": backup,
-         "new_sha256": new, "done": bool(d)} for seq, kind, shot_id, src, dst, backup, new, d in ops]}
-    write_atomic(path or Path(store.db.execute("SELECT log FROM applies WHERE id = ?", (apply_id,)).fetchone()[0]),
-                 json.dumps(data, ensure_ascii=False, indent=1) + "\n")
+        "SELECT seq, kind, shot_id, src, dst, backup, new_sha256, done FROM apply_ops WHERE apply_id = ? ORDER BY seq",
+        (apply_id,),
+    ).fetchall()
+    data = {
+        **info,
+        "root": str(root),
+        "ops": [
+            {
+                "seq": seq,
+                "kind": kind,
+                "shot_id": shot_id,
+                "src": rel(src),
+                "dst": dst and rel(dst),
+                "backup": backup,
+                "new_sha256": new,
+                "done": bool(d),
+            }
+            for seq, kind, shot_id, src, dst, backup, new, d in ops
+        ],
+    }
+    write_atomic(
+        path or Path(store.db.execute("SELECT log FROM applies WHERE id = ?", (apply_id,)).fetchone()[0]),
+        json.dumps(data, ensure_ascii=False, indent=1) + "\n",
+    )
 
 
 def apply_info(store: Store, root: Path, apply_id: int) -> dict[str, Any] | None:
     """An apply as the API shows it: its state and how many of each operation it has."""
     row = store.db.execute(
-        "SELECT id, event_id, status, error, started, finished, undone_at, log FROM applies WHERE id = ?",
-        (apply_id,)).fetchone()
+        "SELECT id, event_id, status, error, started, finished, undone_at, log FROM applies WHERE id = ?", (apply_id,)
+    ).fetchone()
     if row is None:
         return None
-    info = dict(zip(("id", "event_id", "status", "error", "started", "finished", "undone_at", "log"), row,
-                    strict=True))
+    info = dict(zip(("id", "event_id", "status", "error", "started", "finished", "undone_at", "log"), row, strict=True))
     info["log"] = _rel(root)(info["log"])
     counts = store.db.execute(
         "SELECT COUNT(DISTINCT CASE WHEN kind = 'move' THEN shot_id END), SUM(kind = 'move'), SUM(kind = 'xmp_create'),"
-        " SUM(kind = 'xmp_update'), COUNT(*), SUM(done) FROM apply_ops WHERE apply_id = ?", (apply_id,)).fetchone()
+        " SUM(kind = 'xmp_update'), COUNT(*), SUM(done) FROM apply_ops WHERE apply_id = ?",
+        (apply_id,),
+    ).fetchone()
     keys = ("shots_moved", "files_moved", "xmp_created", "xmp_updated", "ops", "done")
     info.update(zip(keys, (int(c or 0) for c in counts), strict=True))
     return info
@@ -362,8 +405,10 @@ def event_applies(store: Store, root: Path, event_id: int) -> list[dict[str, Any
 
 def fail_interrupted(store: Store) -> None:
     """Applies of a previous server run that never finished: their log is there, so they can be restored."""
-    store.db.execute("UPDATE applies SET status = 'failed', error = ?, finished = ? WHERE status = 'running'",
-                     (INTERRUPTED, time.time()))
+    store.db.execute(
+        "UPDATE applies SET status = 'failed', error = ?, finished = ? WHERE status = 'running'",
+        (INTERRUPTED, time.time()),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -385,32 +430,39 @@ def restore(store: Store, root: Path, apply_id: int, undone_dir: Path) -> dict[s
     undone folder, ``changed``: copies of sidecars changed since the apply, ``log``: where the log went (None if it
     could not be moved), ``undone_dir``: the apply's folder in ``undone_dir``.
     """
-    row = store.db.execute("SELECT event_id, status, error, created_dir, log FROM applies WHERE id = ?",
-                           (apply_id,)).fetchone()
+    row = store.db.execute(
+        "SELECT event_id, status, error, created_dir, log FROM applies WHERE id = ?", (apply_id,)
+    ).fetchone()
     if row is None:
         raise LookupError("toteutusta ei ole")
     event_id, status, error, created_dir, log = row
     if status == "undone":
         raise ApplyConflict("toteutus on jo palautettu")
-    if store.db.execute("SELECT 1 FROM applies WHERE event_id = ? AND id > ? AND status != 'undone'",
-                        (event_id, apply_id)).fetchone():
+    if store.db.execute(
+        "SELECT 1 FROM applies WHERE event_id = ? AND id > ? AND status != 'undone'", (event_id, apply_id)
+    ).fetchone():
         raise ApplyConflict("tapahtumalla on uudempi toteutus; palauta se ensin")
     rows = store.db.execute(
         "SELECT seq, kind, src, dst, backup, new_sha256, done, shot_id FROM apply_ops WHERE apply_id = ? "
         "ORDER BY seq DESC",
-        (apply_id,)).fetchall()
+        (apply_id,),
+    ).fetchall()
     interrupted = status == "running" or error == INTERRUPTED
     in_flight = min((r[0] for r in rows if not r[6]), default=None) if interrupted else None
     ops = [(*r[1:6], r[7]) for r in rows if r[6] or r[0] == in_flight]
     rel = _rel(root)
 
     # a moved file is renamed, so only its folders must stay in the library; a sidecar is written through
-    outside = [rel(src) for kind, src, dst, _, _, _ in ops
-               if not inside_root(root, [str(Path(src).parent), str(Path(dst).parent)] if kind == "move" else [src])]
+    outside = [
+        rel(src)
+        for kind, src, dst, _, _, _ in ops
+        if not inside_root(root, [str(Path(src).parent), str(Path(dst).parent)] if kind == "move" else [src])
+    ]
     if outside:
         raise ApplyConflict(f"polku ei enää ole kirjastossa: {', '.join(outside)}")
-    both = [rel(src) for kind, src, dst, _, _, _ in ops
-            if kind == "move" and os.path.lexists(src) and os.path.lexists(dst)]
+    both = [
+        rel(src) for kind, src, dst, _, _, _ in ops if kind == "move" and os.path.lexists(src) and os.path.lexists(dst)
+    ]
     if both:
         raise ApplyConflict(f"tiedosto on sekä paikallaan että {REJECT_DIR}-kansiossa: {', '.join(both)}")
 
@@ -418,8 +470,8 @@ def restore(store: Store, root: Path, apply_id: int, undone_dir: Path) -> dict[s
     missing: list[str] = []
     created: list[str] = []
     changed: list[str] = []
-    found: set[int] = set()                 # shots with a file back in place
-    lost: set[int] = set()                  # shots with a moved file found nowhere
+    found: set[int] = set()  # shots with a file back in place
+    lost: set[int] = set()  # shots with a moved file found nowhere
     try:
         for kind, src, dst, backup, new_sha, shot_id in ops:
             src_p = Path(src)
@@ -440,7 +492,7 @@ def restore(store: Store, root: Path, apply_id: int, undone_dir: Path) -> dict[s
                 if now == backup:
                     continue
                 if now is not None and sha256(now) != new_sha:
-                    changed.append(str(_keep(root, src_p, keep_dir, copy=True)))      # changed since the apply
+                    changed.append(str(_keep(root, src_p, keep_dir, copy=True)))  # changed since the apply
                 write_atomic(src_p, backup)
     except OSError as e:
         store.db.rollback()
@@ -450,20 +502,28 @@ def restore(store: Store, root: Path, apply_id: int, undone_dir: Path) -> dict[s
         raise ApplyFailed(apply_id, error) from e
     store.db.execute(
         "UPDATE shots SET state = 'present' WHERE state = 'moved' AND id IN "
-        "(SELECT shot_id FROM apply_ops WHERE apply_id = ? AND kind = 'move')", (apply_id,))
+        "(SELECT shot_id FROM apply_ops WHERE apply_id = ? AND kind = 'move')",
+        (apply_id,),
+    )
     # a shot none of whose files was found stays out of the grid, as the next analysis would leave it
     store.db.executemany("UPDATE shots SET state = 'missing' WHERE id = ?", [(i,) for i in lost - found])
-    store.db.execute("UPDATE applies SET status = 'undone', error = '', undone_at = ? WHERE id = ?",
-                     (time.time(), apply_id))
+    store.db.execute(
+        "UPDATE applies SET status = 'undone', error = '', undone_at = ? WHERE id = ?", (time.time(), apply_id)
+    )
     log_dest = _move_log(store, root, apply_id, Path(log), keep_dir)
     store.commit()
     if created_dir:
         try:
-            Path(log).parent.rmdir()            # only when empty: anything put there since stays
+            Path(log).parent.rmdir()  # only when empty: anything put there since stays
         except OSError:
             pass
-    return {"missing": missing, "created": created, "changed": changed,
-            "log": log_dest and str(log_dest), "undone_dir": str(keep_dir)}
+    return {
+        "missing": missing,
+        "created": created,
+        "changed": changed,
+        "log": log_dest and str(log_dest),
+        "undone_dir": str(keep_dir),
+    }
 
 
 def _move_log(store: Store, root: Path, apply_id: int, log: Path, keep_dir: Path) -> Path | None:

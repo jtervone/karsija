@@ -12,16 +12,16 @@ import numpy as np
 from karsija import previews
 from karsija.library import capture_time, exif_metadata, load_image
 
-GRID = 8                      # sharpness tiles per axis
-MIN_HIST = 0.9                # colour histogram correlation that lets a looser dHash match group
+GRID = 8  # sharpness tiles per axis
+MIN_HIST = 0.9  # colour histogram correlation that lets a looser dHash match group
 
 # Grouping and judging thresholds; the `settings` table overrides them
 DEFAULT_SETTINGS: dict[str, float] = {
-    "gap": 3.0,               # max seconds between consecutive shots of a group
-    "hamming": 40,            # max dHash difference (0-256) of similar shots
-    "abs_blur": 10.0,         # sharpness below this = blurry
-    "rel_blur": 0.25,         # below this fraction of the event median = blurry
-    "sim_keep": 0.0,          # keep a group member whose sharpness >= this x the best (0 = only the best)
+    "gap": 3.0,  # max seconds between consecutive shots of a group
+    "hamming": 40,  # max dHash difference (0-256) of similar shots
+    "abs_blur": 10.0,  # sharpness below this = blurry
+    "rel_blur": 0.25,  # below this fraction of the event median = blurry
+    "sim_keep": 0.0,  # keep a group member whose sharpness >= this x the best (0 = only the best)
 }
 
 
@@ -30,20 +30,20 @@ DEFAULT_SETTINGS: dict[str, float] = {
 # --------------------------------------------------------------------------- #
 @dataclass
 class Shot:
-    key: str                       # path of the "primary" file (RAW if present)
-    files: list[str]               # all files of this shot (RAW + JPEG sidecar)
-    taken: float = 0.0             # unix time
-    sharp: float = 0.0             # focus-region sharpness
+    key: str  # path of the "primary" file (RAW if present)
+    files: list[str]  # all files of this shot (RAW + JPEG sidecar)
+    taken: float = 0.0  # unix time
+    sharp: float = 0.0  # focus-region sharpness
     sharp_global: float = 0.0
-    clip_hi: float = 0.0           # fraction of blown highlights
-    clip_lo: float = 0.0           # fraction of crushed shadows
+    clip_hi: float = 0.0  # fraction of blown highlights
+    clip_lo: float = 0.0  # fraction of crushed shadows
     dhash: str = ""
     hist: list[float] = field(default_factory=list)
     error: str = ""
-    exif: dict[str, Any] = field(default_factory=dict)   # see library.exif_metadata
+    exif: dict[str, Any] = field(default_factory=dict)  # see library.exif_metadata
     # filled in by analysis
     group: int = -1
-    verdict: str = ""              # best | keep | similar | blurry | error
+    verdict: str = ""  # best | keep | similar | blurry | error
     reason: str = ""
 
 
@@ -51,10 +51,10 @@ class Shot:
 # Metrics
 # --------------------------------------------------------------------------- #
 _DIR_KERNELS = [
-    np.array([[0, 0, 0], [-1, 2, -1], [0, 0, 0]], np.float32),   # horizontal
-    np.array([[0, -1, 0], [0, 2, 0], [0, -1, 0]], np.float32),   # vertical
-    np.array([[-1, 0, 0], [0, 2, 0], [0, 0, -1]], np.float32),   # diagonal \
-    np.array([[0, 0, -1], [0, 2, 0], [-1, 0, 0]], np.float32),   # diagonal /
+    np.array([[0, 0, 0], [-1, 2, -1], [0, 0, 0]], np.float32),  # horizontal
+    np.array([[0, -1, 0], [0, 2, 0], [0, -1, 0]], np.float32),  # vertical
+    np.array([[-1, 0, 0], [0, 2, 0], [0, 0, -1]], np.float32),  # diagonal \
+    np.array([[0, 0, -1], [0, 2, 0], [-1, 0, 0]], np.float32),  # diagonal /
 ]
 
 
@@ -99,8 +99,9 @@ def dhash(gray: np.ndarray, size: int = 16) -> str:
 
 
 def hamming(a: str, b: str) -> int:
-    return int(np.unpackbits(np.frombuffer(bytes.fromhex(a), np.uint8) ^
-                             np.frombuffer(bytes.fromhex(b), np.uint8)).sum())
+    return int(
+        np.unpackbits(np.frombuffer(bytes.fromhex(a), np.uint8) ^ np.frombuffer(bytes.fromhex(b), np.uint8)).sum()
+    )
 
 
 def color_hist(bgr: np.ndarray) -> list[float]:
@@ -125,7 +126,7 @@ def analyse_file(primary: str, files: list[str], preview: tuple[Path, str] | Non
             try:
                 previews.write_all(pil, *preview)
             except Exception:  # noqa: BLE001
-                pass            # made on request instead; a full disk must not fail the analysis
+                pass  # made on request instead; a full disk must not fail the analysis
         gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
         shot.taken = capture_time(src, pil)
         shot.exif = exif_metadata(pil)
@@ -206,5 +207,3 @@ def judge(shots: list[Shot], abs_blur: float, rel_blur: float, sim_keep: float) 
             else:
                 s.verdict = "similar"
                 s.reason = f"ryhmän paras on terävämpi ({s.sharp / best.sharp:.0%} parhaasta)"
-
-

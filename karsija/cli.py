@@ -45,8 +45,7 @@ def make_thumb(shot: Shot, out_dir: Path) -> str:
     return f"thumbs/{name}"
 
 
-VERDICT_FI = {"best": "Paras", "keep": "Pidä", "similar": "Samankaltainen",
-              "blurry": "Epäterävä", "error": "Virhe"}
+VERDICT_FI = {"best": "Paras", "keep": "Pidä", "similar": "Samankaltainen", "blurry": "Epäterävä", "error": "Virhe"}
 
 
 def write_report(report_dir: Path, results: dict[Path, list[Shot]], root: Path, workers: int) -> Path:
@@ -55,13 +54,16 @@ def write_report(report_dir: Path, results: dict[Path, list[Shot]], root: Path, 
 
     all_shots = [s for shots in results.values() for s in shots]
     with cf.ThreadPoolExecutor(workers) as ex:
-        thumb_of = dict(zip((s.key for s in all_shots), ex.map(lambda s: make_thumb(s, thumbs), all_shots), strict=True))
+        thumb_of = dict(
+            zip((s.key for s in all_shots), ex.map(lambda s: make_thumb(s, thumbs), all_shots), strict=True)
+        )
 
     totals = {k: 0 for k in VERDICT_FI}
     for s in all_shots:
         totals[s.verdict] = totals.get(s.verdict, 0) + 1
 
-    parts = [f"""<!DOCTYPE html><html lang="fi"><head><meta charset="utf-8">
+    parts = [
+        f"""<!DOCTYPE html><html lang="fi"><head><meta charset="utf-8">
 <title>Karsintaraportti</title><style>
 body{{font-family:system-ui,sans-serif;background:#16181c;color:#ddd;margin:0;padding:1.5rem}}
 h1{{margin-top:0}} h2{{border-bottom:1px solid #333;padding-bottom:.3rem;margin-top:2.5rem}}
@@ -80,17 +82,21 @@ body.hide-keep .card.keep, body.hide-best .card.best{{display:none}}
 </style></head><body>
 <h1>Karsintaraportti</h1>
 <p>{html.escape(str(root))} – {datetime.now():%Y-%m-%d %H:%M}</p>
-<p class="summary">""" + "".join(
-        f"<span>{VERDICT_FI[k]}: <b>{v}</b></span>" for k, v in totals.items() if v) + """</p>
+<p class="summary">"""
+        + "".join(f"<span>{VERDICT_FI[k]}: <b>{v}</b></span>" for k, v in totals.items() if v)
+        + """</p>
 <p class="filters">
 <label><input type="checkbox" onchange="document.body.classList.toggle('hide-keep',this.checked)"> piilota "Pidä"</label>
 <label><input type="checkbox" onchange="document.body.classList.toggle('hide-best',this.checked)"> piilota "Paras"</label>
-</p>"""]
+</p>"""
+    ]
 
     for ev, shots in results.items():
         flagged = sum(s.verdict in ("blurry", "similar") for s in shots)
-        parts.append(f"<h2>{html.escape(str(ev.relative_to(root)))} "
-                     f"<small>({len(shots)} kuvaa, {flagged} karsintaehdokasta)</small></h2>")
+        parts.append(
+            f"<h2>{html.escape(str(ev.relative_to(root)))} "
+            f"<small>({len(shots)} kuvaa, {flagged} karsintaehdokasta)</small></h2>"
+        )
         groups: dict[int, list[Shot]] = {}
         for s in sorted(shots, key=lambda s: s.taken):
             groups.setdefault(s.group, []).append(s)
@@ -104,9 +110,10 @@ body.hide-keep .card.keep, body.hide-best .card.best{{display:none}}
                 parts.append(
                     f'<div class="card {s.verdict}">{img}<div class="meta">'
                     f'<span class="badge">{VERDICT_FI.get(s.verdict, s.verdict)}</span> '
-                    f'· terävyys {s.sharp:.0f}<br>'
+                    f"· terävyys {s.sharp:.0f}<br>"
                     f'<span class="name">{html.escape(Path(s.key).name)}</span><br>'
-                    f'{html.escape(s.reason)}</div></div>')
+                    f"{html.escape(s.reason)}</div></div>"
+                )
             parts.append("</div>")
     parts.append("</body></html>")
     out = report_dir / "index.html"
@@ -118,14 +125,36 @@ def write_csv(report_dir: Path, results: dict[Path, list[Shot]]) -> Path:
     out = report_dir / "tulokset.csv"
     with out.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["kansio", "tiedosto", "tuomio", "ryhmä", "terävyys", "terävyys_koko_kuva",
-                    "puhki_%", "musta_%", "aika", "syy"])
+        w.writerow(
+            [
+                "kansio",
+                "tiedosto",
+                "tuomio",
+                "ryhmä",
+                "terävyys",
+                "terävyys_koko_kuva",
+                "puhki_%",
+                "musta_%",
+                "aika",
+                "syy",
+            ]
+        )
         for ev, shots in results.items():
             for s in sorted(shots, key=lambda s: s.taken):
-                w.writerow([ev.name, Path(s.key).name, s.verdict, s.group, f"{s.sharp:.1f}",
-                            f"{s.sharp_global:.1f}", f"{s.clip_hi * 100:.2f}", f"{s.clip_lo * 100:.2f}",
-                            datetime.fromtimestamp(s.taken).isoformat(timespec="seconds") if s.taken else "",
-                            s.reason])
+                w.writerow(
+                    [
+                        ev.name,
+                        Path(s.key).name,
+                        s.verdict,
+                        s.group,
+                        f"{s.sharp:.1f}",
+                        f"{s.sharp_global:.1f}",
+                        f"{s.clip_hi * 100:.2f}",
+                        f"{s.clip_lo * 100:.2f}",
+                        datetime.fromtimestamp(s.taken).isoformat(timespec="seconds") if s.taken else "",
+                        s.reason,
+                    ]
+                )
     return out
 
 
@@ -133,77 +162,127 @@ def write_csv(report_dir: Path, results: dict[Path, list[Shot]]) -> Path:
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
-SHUTDOWN_GRACE = 2          # seconds the server waits for open requests when stopped
+SHUTDOWN_GRACE = 2  # seconds the server waits for open requests when stopped
 MOVE_KINDS = {"blurry", "similar"}
-SCAN_EPILOG = ("Mitään ei poisteta. --write-xmp kirjoittaa tuomion XMP-sivutiedostoihin arvioksi ja väritunnisteeksi "
-               "(xmp:Rating, xmp:Label): Paras 5 / Green, Pidä 3, Samankaltainen 1 / Yellow, Epäterävä -1 / Red; "
-               "analysoimatta jääneisiin ei kosketa. Olemassa olevissa sivutiedostoissa muut tiedot säilyvät. Kuva, jonka "
-               "sivutiedostossa on oma arvio tai väritunniste (muu kuin karsijan kirjoittama), jätetään ennalleen; "
-               "--xmp-overwrite korvaa nekin. Pidä-tuomio poistaa vain karsijan omat väritunnisteet. nimi.xmp luodaan "
-               "vain, jos kuvalla ei ole yhtään sivutiedostoa. "
-               f"--move siirtää karsitut tapahtumakansion {REJECT_DIR}-alikansioon, josta ne voi siirtää takaisin käsin "
-               "(siirtoa ei kirjata, joten Palauta karsitut ei palauta sitä).")
+SCAN_EPILOG = (
+    "Mitään ei poisteta. --write-xmp kirjoittaa tuomion XMP-sivutiedostoihin arvioksi ja väritunnisteeksi "
+    "(xmp:Rating, xmp:Label): Paras 5 / Green, Pidä 3, Samankaltainen 1 / Yellow, Epäterävä -1 / Red; "
+    "analysoimatta jääneisiin ei kosketa. Olemassa olevissa sivutiedostoissa muut tiedot säilyvät. Kuva, jonka "
+    "sivutiedostossa on oma arvio tai väritunniste (muu kuin karsijan kirjoittama), jätetään ennalleen; "
+    "--xmp-overwrite korvaa nekin. Pidä-tuomio poistaa vain karsijan omat väritunnisteet. nimi.xmp luodaan "
+    "vain, jos kuvalla ei ole yhtään sivutiedostoa. "
+    f"--move siirtää karsitut tapahtumakansion {REJECT_DIR}-alikansioon, josta ne voi siirtää takaisin käsin "
+    "(siirtoa ei kirjata, joten Palauta karsitut ei palauta sitä)."
+)
 
 
-SERVE_EPILOG = ("Palvelin kirjoittaa kirjastoon vain, kun tapahtuma toteutetaan (Toteuta) tai palautetaan "
-                "(Palauta karsitut). Päätökset ja analyysit tallentuvat tietokantaan, "
-                "oletuksena kirjaston ulkopuolelle (ks. --db), ja esikatselukuvat välimuistiin (ks. --previews; "
-                "tavallisesti 0,5–1 Mt kuvaa kohden, kansion voi poistaa milloin vain).")
+SERVE_EPILOG = (
+    "Palvelin kirjoittaa kirjastoon vain, kun tapahtuma toteutetaan (Toteuta) tai palautetaan "
+    "(Palauta karsitut). Päätökset ja analyysit tallentuvat tietokantaan, "
+    "oletuksena kirjaston ulkopuolelle (ks. --db), ja esikatselukuvat välimuistiin (ks. --previews; "
+    "tavallisesti 0,5–1 Mt kuvaa kohden, kansion voi poistaa milloin vain)."
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="karsija", description="Kuvien karsinta-apu.")
     sub = ap.add_subparsers(dest="command", required=True)
 
-    sc = sub.add_parser("scan", help="analysoi kirjasto ja kirjoita raportti",
-                        description="Etsi epäterävät kuvat ja valitse samankaltaisista paras.",
-                        epilog=SCAN_EPILOG)
+    sc = sub.add_parser(
+        "scan",
+        help="analysoi kirjasto ja kirjoita raportti",
+        description="Etsi epäterävät kuvat ja valitse samankaltaisista paras.",
+        epilog=SCAN_EPILOG,
+    )
     sc.add_argument("root", type=Path, help="kuvakirjaston juuri (sisältää YYYY-kansiot)")
-    sc.add_argument("--only", default="",
-                    help="käsittele vain kansiot joiden polku sisältää tämän (esim. 2025 tai 2025-06)")
-    sc.add_argument("--report", type=Path, default=Path("karsintaraportti"),
-                    help="raporttikansio (myös karsija.sqlite-tietokanta)")
-    sc.add_argument("--workers", type=int, default=os.cpu_count() or 4,
-                    help="rinnakkaisten analyysiprosessien määrä (oletus: CPU-ytimien määrä)")
+    sc.add_argument(
+        "--only", default="", help="käsittele vain kansiot joiden polku sisältää tämän (esim. 2025 tai 2025-06)"
+    )
+    sc.add_argument(
+        "--report", type=Path, default=Path("karsintaraportti"), help="raporttikansio (myös karsija.sqlite-tietokanta)"
+    )
+    sc.add_argument(
+        "--workers",
+        type=int,
+        default=os.cpu_count() or 4,
+        help="rinnakkaisten analyysiprosessien määrä (oletus: CPU-ytimien määrä)",
+    )
     sc.add_argument("--gap", type=float, default=3.0, help="max sekunnit peräkkäisten kuvien välillä samassa ryhmässä")
     sc.add_argument("--hamming", type=int, default=40, help="max dHash-ero (0-256) samankaltaisille")
     sc.add_argument("--abs-blur", type=float, default=10.0, help="tätä pienempi terävyys = epäterävä")
     sc.add_argument("--rel-blur", type=float, default=0.25, help="alle tämä osuus kansion mediaanista = epäterävä")
-    sc.add_argument("--sim-keep", type=float, default=0.0,
-                    help="pidä ryhmän jäsen myös, jos terävyys ≥ tämä × paras (esim. 0.95). Oletus: vain paras pidetään")
-    sc.add_argument("--write-xmp", action="store_true",
-                    help="kirjoita arvio XMP-sivutiedostoihin (omat arviot ja väritunnisteet säilyvät; ks. alla)")
-    sc.add_argument("--xmp-overwrite", action="store_true",
-                    help="--write-xmp korvaa myös omat arviot ja väritunnisteet")
+    sc.add_argument(
+        "--sim-keep",
+        type=float,
+        default=0.0,
+        help="pidä ryhmän jäsen myös, jos terävyys ≥ tämä × paras (esim. 0.95). Oletus: vain paras pidetään",
+    )
+    sc.add_argument(
+        "--write-xmp",
+        action="store_true",
+        help="kirjoita arvio XMP-sivutiedostoihin (omat arviot ja väritunnisteet säilyvät; ks. alla)",
+    )
+    sc.add_argument(
+        "--xmp-overwrite", action="store_true", help="--write-xmp korvaa myös omat arviot ja väritunnisteet"
+    )
     sc.add_argument("--move", default="", help="siirrä _karsitut-alikansioon: blurry,similar")
     sc.set_defaults(func=scan)
 
-    sv = sub.add_parser("serve", help="käynnistä selainkäyttöliittymän palvelin",
-                        description="Käynnistä karsijan palvelin ja avaa se selaimessa.", epilog=SERVE_EPILOG)
+    sv = sub.add_parser(
+        "serve",
+        help="käynnistä selainkäyttöliittymän palvelin",
+        description="Käynnistä karsijan palvelin ja avaa se selaimessa.",
+        epilog=SERVE_EPILOG,
+    )
     sv.add_argument("root", type=Path, help="kuvakirjaston juuri (sisältää YYYY-kansiot)")
     sv.add_argument("--host", default="127.0.0.1", help="osoite jota kuunnellaan (oletus: vain tämä kone)")
     sv.add_argument("--port", type=int, default=8765, help="portti (oletus: 8765)")
     sv.add_argument("--no-browser", action="store_true", help="älä avaa selainta")
-    sv.add_argument("--workers", type=int, default=os.cpu_count() or 4,
-                    help="rinnakkaisten analyysiprosessien määrä (oletus: CPU-ytimien määrä)")
-    sv.add_argument("--db", type=Path, default=None,
-                    help="tietokanta (oletus: $XDG_DATA_HOME/karsija/<juuren tiiviste>.sqlite, "
-                         "ilman muuttujaa ~/.local/share/karsija/...)")
-    sv.add_argument("--previews", type=Path, default=None, metavar="KANSIO",
-                    help="esikatselukuvien välimuisti (oletus: $XDG_CACHE_HOME/karsija/previews, "
-                         "ilman muuttujaa ~/.cache/karsija/previews)")
-    sv.add_argument("--allow-host", action="append", default=[], metavar="NIMI",
-                    help="hyväksy myös tämä palvelimen nimi selaimen osoitteessa (esim. kone.local); "
-                         "voi antaa useasti")
-    sv.add_argument("--docs", action="store_true",
-                    help="rajapinnan kokeilusivu osoitteeseen /docs (lataa Swagger UI:n cdn.jsdelivr.net:stä)")
+    sv.add_argument(
+        "--workers",
+        type=int,
+        default=os.cpu_count() or 4,
+        help="rinnakkaisten analyysiprosessien määrä (oletus: CPU-ytimien määrä)",
+    )
+    sv.add_argument(
+        "--db",
+        type=Path,
+        default=None,
+        help="tietokanta (oletus: $XDG_DATA_HOME/karsija/<juuren tiiviste>.sqlite, "
+        "ilman muuttujaa ~/.local/share/karsija/...)",
+    )
+    sv.add_argument(
+        "--previews",
+        type=Path,
+        default=None,
+        metavar="KANSIO",
+        help="esikatselukuvien välimuisti (oletus: $XDG_CACHE_HOME/karsija/previews, "
+        "ilman muuttujaa ~/.cache/karsija/previews)",
+    )
+    sv.add_argument(
+        "--allow-host",
+        action="append",
+        default=[],
+        metavar="NIMI",
+        help="hyväksy myös tämä palvelimen nimi selaimen osoitteessa (esim. kone.local); voi antaa useasti",
+    )
+    sv.add_argument(
+        "--docs",
+        action="store_true",
+        help="rajapinnan kokeilusivu osoitteeseen /docs (lataa Swagger UI:n cdn.jsdelivr.net:stä)",
+    )
     sv.set_defaults(func=serve)
     return ap
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    if argv and not argv[0].startswith("-") and argv[0] not in ("scan", "serve") and Path(argv[0]).expanduser().is_dir():
+    if (
+        argv
+        and not argv[0].startswith("-")
+        and argv[0] not in ("scan", "serve")
+        and Path(argv[0]).expanduser().is_dir()
+    ):
         # the old script took the library root as its first argument
         print(f"Käytä: karsija scan {argv[0]} ...", file=sys.stderr)
         return 2
@@ -225,8 +304,11 @@ def write_xmp(shot: Shot, overwrite: bool = False) -> str:
     except UserValuesKept:
         return "user"
     except XmpError as e:
-        print(f"XMP-sivutiedosto ei kelpaa, kuvan sivutiedostoihin ei koskettu: {e}. "
-              "Korjaa tai siirrä sivutiedosto pois ja aja uudelleen.", file=sys.stderr)
+        print(
+            f"XMP-sivutiedosto ei kelpaa, kuvan sivutiedostoihin ei koskettu: {e}. "
+            "Korjaa tai siirrä sivutiedosto pois ja aja uudelleen.",
+            file=sys.stderr,
+        )
         return "error"
     except XmpWriteError as e:
         msg = f"XMP-kirjoitus epäonnistui: {e}"
@@ -305,9 +387,14 @@ def scan(args: argparse.Namespace) -> int:
     return 1 if args.write_xmp and xmp_stats["error"] else 0
 
 
-XMP_STATS_FI = {"updated": "päivitetty", "created": "uusi sivutiedosto", "unchanged": "jo ajan tasalla",
-                "user": "oma arvio säilytetty (ks. --xmp-overwrite)", "skip": "ei analysoitu",
-                "error": "epäonnistui (ks. virheet yllä)"}
+XMP_STATS_FI = {
+    "updated": "päivitetty",
+    "created": "uusi sivutiedosto",
+    "unchanged": "jo ajan tasalla",
+    "user": "oma arvio säilytetty (ks. --xmp-overwrite)",
+    "skip": "ei analysoitu",
+    "error": "epäonnistui (ks. virheet yllä)",
+}
 
 
 def xmp_summary(stats: dict[str, int]) -> str:
@@ -333,13 +420,13 @@ def bracket(host: str) -> str:
 def own_host_names() -> list[str]:
     """Names and addresses this machine is reached by, for a server listening on every address."""
     names = [socket.gethostname(), socket.getfqdn()]
-    names += [f"{n}.local" for n in names[:1] if "." not in n]          # mDNS
+    names += [f"{n}.local" for n in names[:1] if "." not in n]  # mDNS
     try:
         names += [str(a[4][0]) for a in socket.getaddrinfo(socket.gethostname(), None)]
     except OSError:
         pass
     for family, probe in ((socket.AF_INET, "192.0.2.1"), (socket.AF_INET6, "2001:db8::1")):
-        try:        # the address of the default route; connect() on UDP sends nothing
+        try:  # the address of the default route; connect() on UDP sends nothing
             with socket.socket(family, socket.SOCK_DGRAM) as s:
                 s.connect((probe, 9))
                 names.append(str(s.getsockname()[0]))
@@ -391,34 +478,53 @@ def serve(args: argparse.Namespace) -> int:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     preview_dir = (args.previews.expanduser() if args.previews else default_cache_dir()).resolve()
     if preview_dir.is_relative_to(root):
-        print(f"VAROITUS: esikatselukansio {preview_dir} on kirjaston sisällä; palvelin kirjoittaa sinne.",
-              file=sys.stderr)
+        print(
+            f"VAROITUS: esikatselukansio {preview_dir} on kirjaston sisällä; palvelin kirjoittaa sinne.",
+            file=sys.stderr,
+        )
     if error := cache_error(preview_dir):
-        print(f"VAROITUS: esikatselukansioon {preview_dir} ei voi kirjoittaa ({error}); esikatseluja ei voi "
-              "tehdä. Valitse toinen kansio valitsimella --previews.", file=sys.stderr)
+        print(
+            f"VAROITUS: esikatselukansioon {preview_dir} ei voi kirjoittaa ({error}); esikatseluja ei voi "
+            "tehdä. Valitse toinen kansio valitsimella --previews.",
+            file=sys.stderr,
+        )
     if not is_loopback(args.host):
-        print(f"VAROITUS: palvelin kuuntelee osoitteessa {args.host}. Kuka tahansa verkossa voi selata kirjastoa "
-              "ja tehdä päätöksiä; palvelimessa ei ole kirjautumista. Käytä vain luotetussa verkossa.",
-              file=sys.stderr)
+        print(
+            f"VAROITUS: palvelin kuuntelee osoitteessa {args.host}. Kuka tahansa verkossa voi selata kirjastoa "
+            "ja tehdä päätöksiä; palvelimessa ei ole kirjautumista. Käytä vain luotetussa verkossa.",
+            file=sys.stderr,
+        )
     if error := bind_error(args.host, args.port):
         print(error, file=sys.stderr)
         return 1
     host = f"[{args.host}]" if ":" in args.host else args.host
     any_address = args.host in ("0.0.0.0", "::")
     url = f"http://{'127.0.0.1' if any_address else host}:{args.port}/"
-    print(f"Kirjasto:     {root}\nTietokanta:   {db_path}\nEsikatselut:  {preview_dir}\nOsoite:       {url}"
-          + ("  (kuuntelee kaikissa verkko-osoitteissa)" if any_address else ""), flush=True)
+    print(
+        f"Kirjasto:     {root}\nTietokanta:   {db_path}\nEsikatselut:  {preview_dir}\nOsoite:       {url}"
+        + ("  (kuuntelee kaikissa verkko-osoitteissa)" if any_address else ""),
+        flush=True,
+    )
 
     def ready() -> None:
         if not args.no_browser:
             threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
 
     # requests must name this server in their Host header (DNS rebinding)
-    allowed_hosts = [*LOOPBACK_HOSTS, *(own_host_names() if any_address else [host]),
-                     *(bracket(h) for h in args.allow_host)]
-    app = create_app(root, db_path, workers=max(1, args.workers), on_ready=ready,
-                     allowed_hosts=list(dict.fromkeys(h.lower() for h in allowed_hosts)), docs=args.docs,
-                     preview_dir=preview_dir)
+    allowed_hosts = [
+        *LOOPBACK_HOSTS,
+        *(own_host_names() if any_address else [host]),
+        *(bracket(h) for h in args.allow_host),
+    ]
+    app = create_app(
+        root,
+        db_path,
+        workers=max(1, args.workers),
+        on_ready=ready,
+        allowed_hosts=list(dict.fromkeys(h.lower() for h in allowed_hosts)),
+        docs=args.docs,
+        preview_dir=preview_dir,
+    )
     # an open page keeps its progress stream (SSE) open for good: without a time limit, Ctrl+C would wait for it
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning", timeout_graceful_shutdown=SHUTDOWN_GRACE)
     return 0

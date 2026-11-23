@@ -65,7 +65,7 @@ def test_load_image_raw(library: Library, monkeypatch: pytest.MonkeyPatch, thumb
     raw = library.path("DSC_0100.NEF")
     bgr, pil = load_image(raw)
     assert opened == [str(raw)]
-    assert bgr.shape == (768, 1024, 3)            # long edge scaled down to ANALYSIS_EDGE
+    assert bgr.shape == (768, 1024, 3)  # long edge scaled down to ANALYSIS_EDGE
     assert pil is not None and pil.size == (1600, 1200)
 
 
@@ -102,7 +102,7 @@ def test_exif_camera_name(tmp_path: Path) -> None:
 def test_read_exif_prefers_the_jpeg(library: Library) -> None:
     raw, jpg = str(library.path("DSC_0100.NEF")), str(library.path("DSC_0100.JPG"))
     assert read_exif(raw, [jpg, raw])["iso"] == 400
-    assert read_exif(raw, [raw]) == {}             # placeholder NEF: unreadable, no metadata
+    assert read_exif(raw, [raw]) == {}  # placeholder NEF: unreadable, no metadata
 
 
 def test_safe_path(tmp_path: Path) -> None:
@@ -115,7 +115,15 @@ def test_safe_path(tmp_path: Path) -> None:
     assert safe_path(root, "2025/../2025/./a.jpg") == root.resolve() / "2025" / "a.jpg"
     assert safe_path(root, "2025/inner.jpg") == root.resolve() / "2025" / "a.jpg"
     assert safe_path(root, ".") == root.resolve()
-    for bad in ("", "..", "../out.jpg", "2025/../../out.jpg", "/etc/passwd", str(root / "2025"), "2025/link.jpg",
-                "a\x00b"):
+    for bad in (
+        "",
+        "..",
+        "../out.jpg",
+        "2025/../../out.jpg",
+        "/etc/passwd",
+        str(root / "2025"),
+        "2025/link.jpg",
+        "a\x00b",
+    ):
         with pytest.raises(UnsafePath):
             safe_path(root, bad)

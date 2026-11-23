@@ -17,7 +17,7 @@ import pytest
 from PIL import Image
 from PIL.TiffImagePlugin import IFDRational
 
-W, H = 800, 600                 # below ANALYSIS_EDGE, so images are analysed at full size
+W, H = 800, 600  # below ANALYSIS_EDGE, so images are analysed at full size
 T0 = datetime(2025, 6, 1, 12, 0, 0)
 EVENT = Path("2025") / "2025-06-01-test"
 
@@ -33,7 +33,7 @@ def texture(seed: int, w: int = W, h: int = H) -> np.ndarray:
 
 def motion_blur(img: np.ndarray, length: int = 21) -> np.ndarray:
     kernel = np.zeros((length, length), np.float32)
-    kernel[length // 2, :] = 1.0 / length          # horizontal camera shake
+    kernel[length // 2, :] = 1.0 / length  # horizontal camera shake
     return cv2.filter2D(img, -1, kernel)
 
 
@@ -57,17 +57,23 @@ def save_jpeg(path: Path, gray: np.ndarray, taken: datetime) -> None:
     sub = exif.get_ifd(0x8769)
     sub[36867] = taken.strftime("%Y:%m:%d %H:%M:%S")
     sub[37521] = f"{taken.microsecond // 10000:02d}"
-    sub[33434] = IFDRational(1, 250)      # ExposureTime
-    sub[33437] = IFDRational(28, 10)      # FNumber
-    sub[34855] = 400                      # ISO
-    sub[37386] = IFDRational(50, 1)       # FocalLength
+    sub[33434] = IFDRational(1, 250)  # ExposureTime
+    sub[33437] = IFDRational(28, 10)  # FNumber
+    sub[34855] = 400  # ISO
+    sub[37386] = IFDRational(50, 1)  # FocalLength
     sub[42036] = "NIKKOR Z 50mm f/1.8 S"
     Image.fromarray(gray).convert("RGB").save(path, "JPEG", quality=95, exif=exif)
 
 
 # karsija.library.exif_metadata() of every synthetic JPEG, without datetime_original
-EXIF_META = {"camera": "NIKON Z 6", "exposure_time": 0.004, "f_number": 2.8, "iso": 400, "focal_length": 50.0,
-             "lens": "NIKKOR Z 50mm f/1.8 S"}
+EXIF_META = {
+    "camera": "NIKON Z 6",
+    "exposure_time": 0.004,
+    "f_number": 2.8,
+    "iso": 400,
+    "focal_length": 50.0,
+    "lens": "NIKKOR Z 50mm f/1.8 S",
+}
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -86,7 +92,7 @@ def preview_cache_home(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Pat
 class FakeRaw:
     def __init__(self, thumb: SimpleNamespace | None, rgb: np.ndarray, flip: int = 0):
         self.thumb, self.rgb = thumb, rgb
-        self.sizes = SimpleNamespace(flip=flip)      # LibRaw orientation of the RAW
+        self.sizes = SimpleNamespace(flip=flip)  # LibRaw orientation of the RAW
 
     def __enter__(self) -> FakeRaw:
         return self
