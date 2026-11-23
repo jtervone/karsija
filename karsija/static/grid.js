@@ -16,6 +16,11 @@ export function stars(rating) {
   return rating === 0 ? '☆' : '★'.repeat(rating);
 }
 
+/** The user's stars, or nothing. */
+export function Stars({ rating }) {
+  return rating == null ? null : html`<span class="stars" title=${`${rating} tähteä`}>${stars(rating)}</span>`;
+}
+
 /**
  * One shot. Its colour is the automatic verdict, the corner badge the user's own decision. Re-renders only when its
  * shot (a new object when its decision changes), being current, or its group's best sharpness changes, so moving or
@@ -47,7 +52,7 @@ class Card extends Component {
       <div class="thumb">
         <img src=${shot.preview.grid} alt="" loading="lazy" decoding="async" draggable="false" />
         <${DecisionBadge} decided=${decided} />
-        ${shot.rating != null && html`<span class="stars" title=${`${shot.rating} tähteä`}>${stars(shot.rating)}</span>`}
+        <${Stars} rating=${shot.rating} />
       </div>
       <figcaption>
         <div class="line">

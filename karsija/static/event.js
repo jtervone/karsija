@@ -32,17 +32,18 @@ function usePreload(order, shots, current) {
 
 /**
  * Where `id` is among the shown shots: `Kuva 12 / 340 · ryhmässä 2 / 5`, and the filters that hide the others
- * (`filters` as in `filterGroups`): `(suodatettu: vain ehdokkaat)`.
+ * (`filters` as in `filterGroups`): `· suodatettu: vain ehdokkaat`.
  */
 export function position(order, id, filters = {}) {
   const group = order.group(id);
-  let text = `Kuva ${fmt(order.index.get(id) + 1)} / ${fmt(order.ids.length)}`;
+  const parts = [`Kuva ${fmt(order.index.get(id) + 1)} / ${fmt(order.ids.length)}`];
   if (group && group.members.length > 1) {
     const hidden = group.members.length - group.ids.length;
-    text += ` · ryhmässä ${group.ids.indexOf(id) + 1} / ${group.ids.length}${hidden > 0 ? ` (${hidden} piilossa)` : ''}`;
+    parts.push(`ryhmässä ${group.ids.indexOf(id) + 1} / ${group.ids.length}${hidden > 0 ? `, ${hidden} piilossa` : ''}`);
   }
   const active = FILTERS.filter(([key]) => filters[key]).map(([, label]) => label.toLowerCase());
-  return active.length ? `${text} (suodatettu: ${active.join(', ')})` : text;
+  if (active.length) parts.push(`suodatettu: ${active.join(', ')}`);
+  return parts.join(' · ');
 }
 
 function Counts({ ev, shots }) {
@@ -253,7 +254,7 @@ export function EventView({ route, version }) {
             .map((id) => shots.get(id))} />`)}
     ${data && route.view === 'compare' && html`<p class="muted">
       Vertailunäkymä tulee myöhemmin. Siihen asti tässä näkyy nykyinen ryhmä päätöksineen; pikanäppäimet toimivat
-      zoomausta (Z) lukuun ottamatta, ja Esc palaa ruudukkoon.</p>
+      avaamista (Enter) ja zoomausta (Z) lukuun ottamatta, ja Esc palaa ruudukkoon.</p>
       ${current != null && html`<${Grid} groups=${[currentGroup]} shots=${shots} best=${best} cursor=${current}
         onPick=${setCursor} onOpen=${open} />`}`}
     ${help && html`<${ShortcutHelp} onClose=${() => setHelp(false)} />`}

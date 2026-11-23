@@ -171,10 +171,13 @@ progress:indeterminate::-moz-progress-bar { background: transparent; }
 .stage img { position: absolute; left: 0; top: 0; pointer-events: none; }
 .stage img.fitted { width: 100%; height: 100%; object-fit: contain; }
 .stage img.placed { max-width: none; transform-origin: 0 0; }
-.stage.reject img { opacity: .6; }
+.stage img.covered { visibility: hidden; }     /* the grid preview, once the full one is over it */
+/* a rejected shot is dimmed as a whole, so neither image shows through the other */
+.stage.reject::after { content: ''; position: absolute; inset: 0; background: rgba(0, 0, 0, .4); pointer-events: none; }
 .stage .decision { top: .6rem; right: .6rem; width: 2rem; height: 2rem; font-size: 1.1rem; }
+.stage .decision, .stage .stage-label { z-index: 1; }
 .stage .stage-label {
-  position: absolute; left: .6rem; bottom: .6rem; margin: 0; padding: .1rem .45rem; border-radius: 4px;
+  position: absolute; right: .6rem; width: fit-content; left: .6rem; bottom: .6rem; margin: 0; padding: .1rem .45rem; border-radius: 4px;
   background: rgba(0, 0, 0, .7); font-size: .85rem;
 }
 .meta {

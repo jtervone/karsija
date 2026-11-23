@@ -55,6 +55,8 @@ test('the size of a shot still loading: the last one of the same shape, else the
   const last = { w: 2560, h: 1707 };
   assert.equal(guessSize({ w: 400, h: 267 }, last), last);
   assert.deepEqual(guessSize({ w: 267, h: 400 }, last), { w: 267 * 6.4, h: 2560 });
+  assert.deepEqual(guessSize({ w: 400, h: 300 }, { w: 1920, h: 1280 }), { w: 1920, h: 1440 });   // same camera
+  assert.deepEqual(guessSize({ w: 400, h: 300 }, null), { w: 2560, h: 1920 });
   assert.deepEqual(guessSize({ w: 300, h: 200 }, null), { w: 300, h: 200 });     // a small original
   assert.equal(guessSize(null, last), null);
 });
@@ -104,8 +106,8 @@ test('position among the shown shots', () => {
     { key: 'g1', groupId: 1, members: [1, 2, 3], ids: [1, 3] },
     { key: 's4', groupId: null, members: [4], ids: [4] },
   ]);
-  assert.equal(position(order, 3), 'Kuva 2 / 3 · ryhmässä 2 / 2 (1 piilossa)');
+  assert.equal(position(order, 3), 'Kuva 2 / 3 · ryhmässä 2 / 2, 1 piilossa');
   assert.equal(position(order, 4), 'Kuva 3 / 3');
   assert.equal(position(order, 4, { candidates: true, groups: false, unreviewed: true }),
-    'Kuva 3 / 3 (suodatettu: vain ehdokkaat, vain tarkastamattomat)');
+    'Kuva 3 / 3 · suodatettu: vain ehdokkaat, vain tarkastamattomat');
 });

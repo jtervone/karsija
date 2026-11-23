@@ -1,11 +1,12 @@
 // Loupe: one shot at full preview size, fitted or zoomed in, with its metadata beside it.
 import { api } from './api.js';
-import { DECISIONS, DecisionBadge, VERDICTS, stars } from './grid.js';
+import { DECISIONS, DecisionBadge, Stars, VERDICTS } from './grid.js';
 import { SUGGESTION } from './review.js';
 import { fmt, html, preload, useEffect, useLayoutEffect, useRef, useState } from './ui.js';
 
 const PRELOAD_DELAY = 150;        // ms the loupe rests on a shot before its neighbours load (not while a key is held)
 const CLICK_SLOP = 4;             // px a press may move and still count as a click, not a drag
+const DOUBLE_CLICK = 300;         // ms after a click toggled the zoom in which another click does nothing
 const GRID_EDGE = 400;            // long edges of the previews (previews.SIZES)
 const FULL_EDGE = 2560;
 
@@ -87,14 +88,15 @@ export function pan(stage, img, zoom, dx, dy, dpr = 1) {
 
 /**
  * Size to lay out a shot whose full preview has not loaded yet, from its loaded grid preview `grid`: the last loaded
- * full preview's `last` when the shape is the same (a burst), else the grid preview's scaled up to the full
- * preview's long edge. The full preview of an original smaller than that is the original's size, as is the grid's.
+ * full preview's `last` when the shape is the same (a burst), else the grid preview's scaled up to the long edge of
+ * `last` (likely the same camera; a RAW's embedded preview is often under 2560 px), or without one to 2560 px. An
+ * approximation: the real size replaces it once loaded. An original under 400 px is previewed at its own size.
  */
 export function guessSize(grid, last) {
   if (!grid) return null;
   if (last && Math.abs(grid.w / grid.h - last.w / last.h) < 0.01) return last;
   const edge = Math.max(grid.w, grid.h);
-  const k = edge < GRID_EDGE ? 1 : FULL_EDGE / edge;
+  const k = edge < GRID_EDGE ? 1 : (last ? Math.max(last.w, last.h) : FULL_EDGE) / edge;
   return { w: grid.w * k, h: grid.h * k };
 }
 
@@ -210,6 +212,8 @@ function Meta({ shot, best, position, exif, exifError }) {
     }
   }
   const e = exif ?? {};
+  const loading = exif == null && !exifError;
+  const exifRow = (label, value) => html`<${Row} label=${label} value=${loading ? '…' : value} />`;
   return html`<aside class=${`meta verdict-${auto ?? 'none'}`} aria-label="Kuvan tiedot">
     <p class="position muted">${position}</p>
     <dl>
@@ -217,7 +221,7 @@ function Meta({ shot, best, position, exif, exifError }) {
       <dd class=${`decided ${decided ?? ''}`}>
         ${decided ? DECISIONS[decided] : html`<span class="muted">
           ei päätöstä${suggestion ? `, ehdotus ${DECISIONS[suggestion]}` : ''}</span>`}
-        ${shot.rating != null && html` <span class="stars" title=${`${shot.rating} tähteä`}>${stars(shot.rating)}</span>`}
+        ${shot.rating != null && ' '}<${Stars} rating=${shot.rating} />
       </dd>
       <dt>Arvio</dt>
       <dd><span class="auto">${VERDICTS[auto] ?? 'ei arviota'}</span>${suggestion && ` → ${DECISIONS[suggestion]}`}
@@ -228,13 +232,13 @@ function Meta({ shot, best, position, exif, exifError }) {
         <${Row} label="Puhki palaneet" value=${fmtShare(shot.clip_hi)} title="ylivalottuneiden pikselien osuus" />
         <${Row} label="Tukkoiset varjot" value=${fmtShare(shot.clip_lo)} title="täysin mustien pikselien osuus" />`}
       <${Row} label="Kuvattu" value=${shot.taken > 0 ? seconds.format(new Date(shot.taken * 1000)) : null} />
-      ${exif == null && !exifError && html`<dt>Kuvaustiedot</dt><dd class="muted">ladataan…</dd>`}
-      <${Row} label="Valotusaika" value=${fmtExposure(e.exposure_time)} />
-      <${Row} label="Aukko" value=${fmtAperture(e.f_number)} />
-      <${Row} label="Herkkyys" value=${fmtIso(e.iso)} />
-      <${Row} label="Polttoväli" value=${fmtFocal(e.focal_length, e.focal_length_35mm)} />
-      <${Row} label="Kamera" value=${e.camera} />
-      <${Row} label="Objektiivi" value=${e.lens} />
+      ${exif && Object.keys(exif).length === 0 && html`<dt>Kuvaustiedot</dt><dd class="muted">ei EXIF-tietoja</dd>`}
+      ${exifRow('Valotusaika', fmtExposure(e.exposure_time))}
+      ${exifRow('Aukko', fmtAperture(e.f_number))}
+      ${exifRow('Herkkyys', fmtIso(e.iso))}
+      ${exifRow('Polttoväli', fmtFocal(e.focal_length, e.focal_length_35mm))}
+      ${exifRow('Kamera', e.camera)}
+      ${exifRow('Objektiivi', e.lens)}
       <dt>Tiedostot</dt>
       <dd class="files">${shot.files.map((f) => html`<div key=${f} title=${f}>${f.split('/').pop()}</div>`)}</dd>
     </dl>
@@ -264,6 +268,7 @@ export function Loupe({ shot, best, position, neighbours, keys }) {
   const [dragging, setDragging] = useState(false);
   const pointer = useRef(null);                    // pointer position over the stage, null when not over it
   const drag = useRef(null);
+  const toggled = useRef(-Infinity);               // time of the last click that toggled the zoom
   const { exif, error: exifError } = useExif(shot);
   usePreloadNeighbours(neighbours);
 
@@ -285,6 +290,12 @@ export function Loupe({ shot, best, position, neighbours, keys }) {
     setZoom(zoomAt(stage, size, point, dpr));
     return true;
   };
+  useEffect(() => {
+    // scrolling (narrow screens) moves the stage under a pointer that has not moved: Z zooms around the centre then
+    const forget = () => { if (!drag.current) pointer.current = null; };
+    addEventListener('scroll', forget, { passive: true });
+    return () => removeEventListener('scroll', forget);
+  }, []);
   useLayoutEffect(() => {
     keys.current = (action) => action.type === 'zoom' && toggle(pointer.current);
     return () => { keys.current = null; };
@@ -316,7 +327,9 @@ export function Loupe({ shot, best, position, neighbours, keys }) {
     const d = drag.current;
     drag.current = null;
     setDragging(false);
-    if (d && !d.moved) toggle(at(e));
+    // the second click of a double-click (which opens the loupe from the grid) would zoom straight back
+    if (!d || d.moved || e.timeStamp - toggled.current < DOUBLE_CLICK) return;
+    if (toggle(at(e))) toggled.current = e.timeStamp;
   };
   const onPointerCancel = () => {
     drag.current = null;
@@ -336,19 +349,22 @@ export function Loupe({ shot, best, position, neighbours, keys }) {
         onPointerDown=${onPointerDown} onPointerMove=${onPointerMove} onPointerUp=${onPointerUp}
         onPointerCancel=${onPointerCancel} onPointerLeave=${() => { if (!drag.current) pointer.current = null; }}
         title=${title}>
-      <img key=${shot.preview.grid} class=${placed ? 'placed' : 'fitted'} style=${placed || undefined}
+      <img key=${shot.preview.grid} class=${`${placed ? 'placed' : 'fitted'}${loaded ? ' covered' : ''}`}
+        style=${placed || undefined}
         src=${shot.preview.grid} alt="" draggable="false"
         onLoad=${(e) => setGrid(sizeOf(shot.preview.grid, e))} />
-      <img key=${src} class=${placed ? 'placed' : 'fitted'} style=${placed || undefined} src=${src} alt=${shot.name}
-        draggable="false" decoding="async"
+      ${!failed && html`<img key=${src} class=${placed ? 'placed' : 'fitted'} style=${placed || undefined} src=${src}
+        alt=${shot.name} draggable="false" decoding="async"
         onLoad=${(e) => {
           last.current = sizeOf(src, e);
           setImg(last.current);
         }}
-        onError=${() => setImg({ src, error: true })} />
+        onError=${() => setImg({ src, error: true })} />`}
       <${DecisionBadge} decided=${decided} />
-      ${failed && html`<p class="stage-label error">Esikatselua ei voi näyttää.</p>`}
-      ${box?.zoomed && html`<span class="stage-label">${zoomLabel(box.s, dpr)}${loaded ? '' : ' · ladataan…'}</span>`}
+      ${failed && html`<p class="stage-label error">Täysikokoista esikatselua ei voi näyttää; näkyvissä on vain
+        ruudukon pikkukuva, josta terävyyttä ei voi arvioida.</p>`}
+      ${!failed && (box?.zoomed || !loaded) && html`<span class="stage-label">
+        ${[box?.zoomed && zoomLabel(box.s, dpr), !loaded && 'ladataan…'].filter(Boolean).join(' · ')}</span>`}
     </div>
     <${Meta} shot=${shot} best=${best} position=${position} exif=${exif} exifError=${exifError} />
   </div>`;
