@@ -171,8 +171,10 @@ def test_apply_and_restore_leave_the_event_as_it_was(lib: Lib) -> None:
 
     result = applies.restore(lib.store, lib.root, apply_id, lib.undone)
     assert tree(lib.root) == before
-    assert result["missing"] == []
     kept = lib.undone / str(apply_id)
+    assert (result["missing"], result["changed"]) == ([], [])
+    assert sorted(result["created"]) == [str(kept / EVENT / "b.xmp"), str(kept / EVENT / "e.xmp")]
+    assert result["log"] == str(kept / f"karsija-apply-{apply_id}.json")
     assert sorted(p.relative_to(kept).as_posix() for p in kept.rglob("*") if p.is_file()) == sorted([
         f"{EVENT}/b.xmp", f"{EVENT}/e.xmp", f"karsija-apply-{apply_id}.json"])
     assert json.loads((kept / f"karsija-apply-{apply_id}.json").read_text())["status"] == "undone"
@@ -201,7 +203,7 @@ def test_a_destination_that_exists_aborts_with_nothing_moved(lib: Lib) -> None:
     before = tree(lib.root)
     p = plan(lib)
     assert [(str(path.relative_to(lib.root)), why) for path, why in p.conflicts] \
-        == [(f"{EVENT}/{REJECT_DIR}/e.jpg", "on jo olemassa")]
+        == [(f"{EVENT}/{REJECT_DIR}/e.jpg", "on jo olemassa; siirrä tai nimeä se ensin")]
     with pytest.raises(applies.ApplyConflict):
         applies.apply(lib.store, lib.root, p)
     assert tree(lib.root) == before
@@ -278,8 +280,11 @@ def test_a_failed_apply_can_be_restored(lib: Lib, monkeypatch: pytest.MonkeyPatc
     assert set(lib.states().values()) == {"present"}
 
 
-def test_an_apply_cut_short_by_a_crash_can_be_restored(lib: Lib, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The process dies mid-way: nothing records which operations were done, restore finds out from the files."""
+@pytest.mark.parametrize("moved", [False, True])
+def test_an_apply_cut_short_by_a_crash_can_be_restored(lib: Lib, monkeypatch: pytest.MonkeyPatch,
+                                                       moved: bool) -> None:
+    """The process dies during the 4th move, before or after the rename: the log says it was not done, restore
+    finds out from the files."""
     before = tree(lib.root)
     real, calls = applies._move, [0]
 
@@ -289,6 +294,8 @@ def test_an_apply_cut_short_by_a_crash_can_be_restored(lib: Lib, monkeypatch: py
     def move(src: Path, dst: Path) -> None:
         calls[0] += 1
         if calls[0] == 4:
+            if moved:
+                real(src, dst)
             raise Crash
         real(src, dst)
 
@@ -303,9 +310,85 @@ def test_an_apply_cut_short_by_a_crash_can_be_restored(lib: Lib, monkeypatch: py
     (apply_id, status), = lib.store.db.execute("SELECT id, status FROM applies").fetchall()
     assert status == "running"
     applies.fail_interrupted(lib.store)
-    assert lib.store.db.execute("SELECT done FROM apply_ops").fetchall() == [(0,)] * 18
+    # DSC_1 comes first: its 3 sidecars, then 3 of its moves were done
+    assert lib.store.db.execute("SELECT SUM(done), COUNT(*) FROM apply_ops").fetchone() == (3 + 3, 18)
     applies.restore(lib.store, lib.root, apply_id, lib.undone)
     assert tree(lib.root) == before
+
+
+def test_restore_skips_a_sidecar_the_failed_apply_did_not_write(lib: Lib, monkeypatch: pytest.MonkeyPatch) -> None:
+    real, calls = applies.write_atomic, [0]
+
+    def write(path: Path, text: str) -> None:
+        calls[0] += 1
+        if calls[0] == 3:                    # the 2nd sidecar write (the 1st write is the log)
+            raise OSError(28, "No space left on device", str(path))
+        real(path, text)
+
+    monkeypatch.setattr(applies, "write_atomic", write)
+    with pytest.raises(applies.ApplyFailed) as failed:
+        applies.apply(lib.store, lib.root, plan(lib))
+    monkeypatch.undo()
+    # the user edits a sidecar the apply never got to
+    (lib.event / "c.xmp").write_bytes(b"edited later")
+    result = applies.restore(lib.store, lib.root, failed.value.apply_id, lib.undone)
+    assert (lib.event / "c.xmp").read_bytes() == b"edited later"
+    assert result["changed"] == []
+    for name in ("a.jpg.xmp", "a.xmp", "DSC_1.xmp"):
+        assert (lib.event / name).read_bytes() == FILES[name], name
+
+
+def test_a_restore_cut_short_can_be_run_again(lib: Lib, monkeypatch: pytest.MonkeyPatch) -> None:
+    before = tree(lib.root)
+    apply_id = applies.apply(lib.store, lib.root, plan(lib))
+    real, calls = applies._move, [0]
+
+    def move(src: Path, dst: Path) -> None:
+        calls[0] += 1
+        if calls[0] == 5:
+            raise OSError(5, "Input/output error", str(dst))
+        real(src, dst)
+
+    monkeypatch.setattr(applies, "_move", move)
+    with pytest.raises(applies.ApplyFailed, match="palautus keskeytyi"):
+        applies.restore(lib.store, lib.root, apply_id, lib.undone)
+    monkeypatch.undo()
+    info = applies.apply_info(lib.store, lib.root, apply_id)
+    assert info is not None and info["status"] == "done" and "palautus keskeytyi" in info["error"]
+    applies.restore(lib.store, lib.root, apply_id, lib.undone)
+    assert tree(lib.root) == before
+
+
+def test_a_symlinked_reject_folder_is_a_conflict(lib: Lib, tmp_path: Path) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (lib.event / REJECT_DIR).symlink_to(elsewhere)
+    conflicts = plan(lib).conflicts
+    assert conflicts[0][0].name == REJECT_DIR and "linkki" in conflicts[0][1]
+    assert {why for _, why in conflicts[1:]} == {"polku ei ole kirjastossa"}     # every move leads out
+
+
+def test_a_reject_folder_symlinked_after_the_plan_stops_the_apply(lib: Lib, tmp_path: Path) -> None:
+    p = plan(lib)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (lib.event / REJECT_DIR).symlink_to(elsewhere)
+    before = tree(lib.root)
+    with pytest.raises(applies.ApplyConflict, match="linkki"):
+        applies.apply(lib.store, lib.root, p)
+    assert tree(lib.root) == before and list(elsewhere.iterdir()) == []
+
+
+def test_restore_does_not_write_through_a_link_out_of_the_library(lib: Lib, tmp_path: Path) -> None:
+    apply_id = applies.apply(lib.store, lib.root, plan(lib))
+    target = tmp_path / "bashrc"
+    target.write_text("precious")
+    (lib.event / "c.xmp").unlink()
+    (lib.event / "c.xmp").symlink_to(target)
+    with pytest.raises(applies.ApplyConflict, match="ei enää ole kirjastossa"):
+        applies.restore(lib.store, lib.root, apply_id, lib.undone)
+    assert target.read_text() == "precious"
+    assert (lib.event / REJECT_DIR / "a.jpg").exists()             # nothing was reversed
 
 
 # --------------------------------------------------------------------------- #
@@ -346,6 +429,16 @@ def test_api_apply_and_restore(lib: Lib, client: TestClient) -> None:
     assert post(client, "/api/applies/999/restore").status_code == 404
 
 
+def test_api_undo_does_not_reach_past_an_apply(lib: Lib, client: TestClient) -> None:
+    e_id = lib.shot_id("e.jpg")
+    assert client.patch(f"/api/shots/{e_id}", json={"user_verdict": "reject"}).status_code == 200
+    token = client.get(f"/api/events/{lib.event_id}/apply-plan").json()["confirm_token"]
+    assert post(client, f"/api/events/{lib.event_id}/apply", {"confirm_token": token}).status_code == 200
+    assert post(client, "/api/decisions/undo").json() == {"batch": None, "shots": []}
+    row = lib.store.db.execute("SELECT user_verdict, state FROM shots WHERE id = ?", (e_id,)).fetchone()
+    assert row == ("reject", "moved")
+
+
 def test_api_stale_token_is_rejected(lib: Lib, client: TestClient, tmp_path: Path) -> None:
     token = client.get(f"/api/events/{lib.event_id}/apply-plan").json()["confirm_token"]
     resp = client.patch(f"/api/shots/{lib.shot_id('b.jpg')}", json={"user_verdict": "reject"})
@@ -363,7 +456,8 @@ def test_api_conflict_and_unknown_event(lib: Lib, client: TestClient) -> None:
     (lib.event / REJECT_DIR).mkdir()
     (lib.event / REJECT_DIR / "a.jpg").write_bytes(b"x")
     data = client.get(f"/api/events/{lib.event_id}/apply-plan").json()
-    assert data["conflicts"] == [{"path": f"{EVENT}/{REJECT_DIR}/a.jpg", "reason": "on jo olemassa"}]
+    assert data["conflicts"] == [{"path": f"{EVENT}/{REJECT_DIR}/a.jpg",
+                                  "reason": "on jo olemassa; siirrä tai nimeä se ensin"}]
     resp = post(client, f"/api/events/{lib.event_id}/apply", {"confirm_token": data["confirm_token"]})
     assert resp.status_code == 409
     assert client.get("/api/events/999/apply-plan").status_code == 404

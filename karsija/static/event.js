@@ -92,12 +92,13 @@ export function EventView({ route, version: jobsVersion }) {
   const eventId = route.event;
   const [applied, setApplied] = useState(0);     // grows when an apply or restore may have changed the event
   const version = jobsVersion + applied;
-  const review = useReview(eventId, version);
+  const review = useReview(eventId, version, applied);
   const { data, groups, shots } = review;
   const [filters, setFilters] = useState({ candidates: false, groups: false, unreviewed: false });
   const [cursor, setCursor] = useState(null);
   const [help, setHelp] = useState(false);
   const [applying, setApplying] = useState(false);
+  const [applyRunning, setApplyRunning] = useState(false);
   const changed = useCallback(() => setApplied((n) => n + 1), []);
 
   useEffect(() => { setCursor(null); setApplying(false); }, [eventId]);
@@ -199,7 +200,7 @@ export function EventView({ route, version: jobsVersion }) {
     if (applying) {
       // the dialog's buttons keep Space and Enter; nothing is decided under it
       if (action.type !== 'back') return false;
-      setApplying(false);
+      if (!applyRunning) setApplying(false);       // a running apply's dialog waits for its answer
       return true;
     }
     if (help) {
@@ -336,6 +337,6 @@ export function EventView({ route, version: jobsVersion }) {
       onChanged=${changed} />`}
     ${help && html`<${ShortcutHelp} onClose=${() => setHelp(false)} />`}
     ${applying && ev && html`<${ApplyDialog} ev=${ev} settled=${review.settled} onClose=${() => setApplying(false)}
-      onChanged=${changed} />`}
+      onChanged=${changed} onRunning=${setApplyRunning} onDone=${review.notify} />`}
   </main>`;
 }

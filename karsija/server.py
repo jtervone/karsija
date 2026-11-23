@@ -245,6 +245,7 @@ class AnalyseRequest(BaseModel):
 
 
 class ApplyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     confirm_token: str
 
 
@@ -501,7 +502,8 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
     @app.post("/api/events/{event_id}/apply")
     def apply_event(event_id: int, body: ApplyRequest, store: Db) -> dict[str, Any]:
         """Toteuta: carry out the plan the ``confirm_token`` of ``apply-plan`` confirms. ``409`` when the plan has
-        changed since (or has conflicts, or an analysis of the event is under way); nothing is changed then."""
+        changed since, has conflicts or nothing to do, or an analysis of the event is queued or running; nothing is
+        changed then. ``500`` when an operation fails part way: the apply is ``failed`` and can be restored."""
         with apply_lock:
             try:
                 plan = applies.build_plan(store, root, event_id)

@@ -93,9 +93,8 @@ def build_plan(store: Store, root: Path, event_id: int) -> Plan:
     except UnsafePath:
         raise LookupError("tapahtuman kansio ei ole kirjastossa") from None
     plan = Plan(event_id, folder)
-    reject_dir = folder / REJECT_DIR
-    if os.path.lexists(reject_dir) and not reject_dir.is_dir():
-        plan.conflicts.append((reject_dir, "on olemassa, mutta ei ole kansio"))
+    if problem := reject_dir_problem(folder / REJECT_DIR):
+        plan.conflicts.append((folder / REJECT_DIR, problem))
     rows = store.db.execute(
         "SELECT id, key, files, auto_verdict, user_verdict, rating FROM shots "
         "WHERE event_id = ? AND state = 'present' ORDER BY key", (event_id,)).fetchall()
@@ -108,13 +107,22 @@ def build_plan(store: Store, root: Path, event_id: int) -> Plan:
     return plan
 
 
+def reject_dir_problem(reject_dir: Path) -> str | None:
+    """Why the event's reject folder cannot take the rejects, or None. A symlink could lead out of the library."""
+    if reject_dir.is_symlink():
+        return "on symbolinen linkki; karsija siirtää kuvat vain tavalliseen kansioon, poista linkki ensin"
+    if os.path.lexists(reject_dir) and not reject_dir.is_dir():
+        return "on olemassa, mutta ei ole kansio; siirrä tai nimeä se ensin"
+    return None
+
+
 def _plan_shot(plan: Plan, root: Path, shot_id: int, key: str, files: list[str], auto: str | None, verdict: str,
                rating: int | None) -> None:
     if not inside_root(root, [key, *files]):
         plan.conflicts.append((Path(key), "polku ei ole kirjastossa"))
         return
     if missing := [f for f in files if not os.path.lexists(f)]:
-        plan.conflicts.extend((Path(f), "tiedostoa ei ole") for f in missing)
+        plan.conflicts.extend((Path(f), "tiedostoa ei ole; analysoi tapahtuma uudelleen") for f in missing)
         return
     values = xmp_values(auto or "", verdict, rating)
     assert values is not None                       # a user decision always gives values
@@ -128,7 +136,8 @@ def _plan_shot(plan: Plan, root: Path, shot_id: int, key: str, files: list[str],
         plan.conflicts.append((Path(key), f"sivutiedosto ei ole kelvollista XMP:tä: {e}"))
         return
     except OSError as e:
-        plan.conflicts.append((Path(e.filename or key), e.strerror or str(e)))
+        why = "kirjoitussuojattu" if isinstance(e, PermissionError) else f"ei voi lukea ({e.strerror or e})"
+        plan.conflicts.append((Path(e.filename or key), f"sivutiedosto on {why}; korjaa se ensin"))
         return
     for sidecar in changes:
         if not inside_root(root, [str(sidecar)]):
@@ -140,8 +149,10 @@ def _plan_shot(plan: Plan, root: Path, shot_id: int, key: str, files: list[str],
         return
     for src in shot_files(files, created=changes):
         dst = src.parent / REJECT_DIR / src.name
-        if os.path.lexists(dst):
-            plan.conflicts.append((dst, "on jo olemassa"))
+        if not inside_root(root, [str(dst.parent)]):
+            plan.conflicts.append((dst, "polku ei ole kirjastossa"))
+        elif os.path.lexists(dst):
+            plan.conflicts.append((dst, "on jo olemassa; siirrä tai nimeä se ensin"))
         plan.ops.append(Op("move", shot_id, src, dst))
 
 
@@ -212,6 +223,8 @@ def apply(store: Store, root: Path, plan: Plan) -> int:
     if not plan.ops:
         raise ApplyConflict("ei toteutettavaa: tapahtumassa ei ole hylättyjä kuvia eikä kirjoitettavia XMP:itä")
     reject_dir = plan.folder / REJECT_DIR
+    if problem := reject_dir_problem(reject_dir):          # made since the plan: the token does not cover it
+        raise ApplyConflict(f"{reject_dir}: {problem}")
     created_dir = not reject_dir.exists()
     cur = store.db.execute("INSERT INTO applies (event_id, status, created_dir, started) VALUES (?, 'running', ?, ?)",
                            (plan.event_id, int(created_dir), time.time()))
@@ -229,8 +242,13 @@ def apply(store: Store, root: Path, plan: Plan) -> int:
     try:
         reject_dir.mkdir(exist_ok=True)
         write_log(store, root, apply_id)
-        for op in plan.ops:
+        for seq, op in enumerate(plan.ops):
             _do(op)
+            # stored as each one is done: restore trusts it, except for the one a crash may have cut short
+            store.db.execute("UPDATE apply_ops SET done = 1 WHERE apply_id = ? AND seq = ?", (apply_id, seq))
+            if op.kind == "move":
+                store.db.execute("UPDATE shots SET state = 'moved' WHERE id = ?", (op.shot_id,))
+            store.commit()
             done += 1
     except (OSError, ApplyConflict) as e:
         error = f"{e.strerror}: {e.filename}" if isinstance(e, OSError) and e.strerror and e.filename else str(e)
@@ -261,10 +279,9 @@ def _move(src: Path, dst: Path) -> None:
 
 
 def _finish(store: Store, root: Path, apply_id: int, plan: Plan, done: int, status: str, error: str) -> None:
-    store.db.execute("UPDATE apply_ops SET done = 1 WHERE apply_id = ? AND seq < ?", (apply_id, done))
-    # a shot counts as moved once any of its files is in the reject folder; restore brings it back
-    moved = list(dict.fromkeys(op.shot_id for op in plan.ops[:done] if op.kind == "move"))
-    store.db.executemany("UPDATE shots SET state = 'moved' WHERE id = ?", [(i,) for i in moved])
+    # A decision carried out in the library is no longer undone from the grid (Ctrl+Z): that would leave a moved
+    # shot undecided, or a sidecar out of step with the database. Palauta karsitut reverses it instead.
+    store.forget_decisions({op.shot_id for op in plan.ops[:done]})
     store.db.execute("UPDATE applies SET status = ?, error = ?, finished = ? WHERE id = ?",
                      (status, error, time.time(), apply_id))
     store.commit()
@@ -326,37 +343,52 @@ def restore(store: Store, root: Path, apply_id: int, undone_dir: Path) -> dict[s
     """Reverse an apply: its operations in reverse order, each checked against the files.
 
     A moved file goes back (unless it is already there); a sidecar gets its previous content back (one changed since
-    the apply is first kept in ``undone_dir/<id>/``); a sidecar the apply created moves into ``undone_dir/<id>/``.
-    Raises LookupError for an unknown apply and ApplyConflict, before changing anything, when it is undone already,
-    a newer apply of the event is not, or a file and its moved copy both exist.
+    the apply is first copied into ``undone_dir/<id>/``); a sidecar the apply created moves into ``undone_dir/<id>/``,
+    and so does the apply's log. Operations the apply did not get to are skipped; when it was cut short (a crash),
+    the one under way then is checked against the files too.
 
-    Returns ``missing``: moved files found in neither place, ``kept``: files put into ``undone_dir``: the apply's
-    folder in ``undone_dir``.
+    Raises LookupError for an unknown apply and ApplyConflict, before changing anything, when it is undone already,
+    a newer apply of the event is not, a file and its moved copy both exist, or a path now leads out of the library.
+    Raises ApplyFailed when an operation fails; what was reversed stays reversed, and restore can be run again.
+
+    Returns ``missing``: moved files found in neither place, ``created``: the sidecars the apply created, now in the
+    undone folder, ``changed``: copies of sidecars changed since the apply, ``log``: where the log went (None if it
+    could not be moved), ``undone_dir``: the apply's folder in ``undone_dir``.
     """
-    row = store.db.execute("SELECT event_id, status, created_dir, log FROM applies WHERE id = ?",
+    row = store.db.execute("SELECT event_id, status, error, created_dir, log FROM applies WHERE id = ?",
                            (apply_id,)).fetchone()
     if row is None:
         raise LookupError("toteutusta ei ole")
-    event_id, status, created_dir, log = row
+    event_id, status, error, created_dir, log = row
     if status == "undone":
         raise ApplyConflict("toteutus on jo palautettu")
     if store.db.execute("SELECT 1 FROM applies WHERE event_id = ? AND id > ? AND status != 'undone'",
                         (event_id, apply_id)).fetchone():
         raise ApplyConflict("tapahtumalla on uudempi toteutus; palauta se ensin")
-    ops = store.db.execute(
-        "SELECT kind, shot_id, src, dst, backup, new_sha256 FROM apply_ops WHERE apply_id = ? ORDER BY seq DESC",
+    rows = store.db.execute(
+        "SELECT seq, kind, src, dst, backup, new_sha256, done FROM apply_ops WHERE apply_id = ? ORDER BY seq DESC",
         (apply_id,)).fetchall()
+    interrupted = status == "running" or error == INTERRUPTED
+    in_flight = min((r[0] for r in rows if not r[6]), default=None) if interrupted else None
+    ops = [r[1:6] for r in rows if r[6] or r[0] == in_flight]
     rel = _rel(root)
-    both = [rel(src) for kind, _, src, dst, _, _ in ops
+
+    # a moved file is renamed, so only its folders must stay in the library; a sidecar is written through
+    outside = [rel(src) for kind, src, dst, _, _ in ops
+               if not inside_root(root, [str(Path(src).parent), str(Path(dst).parent)] if kind == "move" else [src])]
+    if outside:
+        raise ApplyConflict(f"polku ei enää ole kirjastossa: {', '.join(outside)}")
+    both = [rel(src) for kind, src, dst, _, _ in ops
             if kind == "move" and os.path.lexists(src) and os.path.lexists(dst)]
     if both:
         raise ApplyConflict(f"tiedosto on sekä paikallaan että {REJECT_DIR}-kansiossa: {', '.join(both)}")
 
     keep_dir = undone_dir / str(apply_id)
     missing: list[str] = []
-    kept: list[Path] = []
+    created: list[str] = []
+    changed: list[str] = []
     try:
-        for kind, _shot_id, src, dst, backup, new_sha in ops:
+        for kind, src, dst, backup, new_sha in ops:
             src_p = Path(src)
             if kind == "move":
                 if os.path.lexists(dst):
@@ -365,42 +397,51 @@ def restore(store: Store, root: Path, apply_id: int, undone_dir: Path) -> dict[s
                     missing.append(rel(dst))
             elif kind == "xmp_create":
                 if os.path.lexists(src_p):
-                    kept.append(_keep(root, src_p, keep_dir))
+                    created.append(str(_keep(root, src_p, keep_dir)))
             else:
                 now = src_p.read_bytes().decode("utf-8", "replace") if os.path.lexists(src_p) else None
                 if now == backup:
                     continue
                 if now is not None and sha256(now) != new_sha:
-                    kept.append(_keep(root, src_p, keep_dir, copy=True))       # changed since the apply
+                    changed.append(str(_keep(root, src_p, keep_dir, copy=True)))      # changed since the apply
                 write_atomic(src_p, backup)
-        store.db.execute(
-            "UPDATE shots SET state = 'present' WHERE state = 'moved' AND id IN "
-            "(SELECT shot_id FROM apply_ops WHERE apply_id = ? AND kind = 'move')", (apply_id,))
-        store.db.execute("UPDATE applies SET status = 'undone', error = '', undone_at = ? WHERE id = ?",
-                         (time.time(), apply_id))
-        store.commit()
-        log_p = Path(log)
-        if os.path.lexists(log_p):
-            # the log goes with the other files restore keeps (updated), so the event folder is again as it was
-            dest = _free(keep_dir / log_p.name)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            store.db.execute("UPDATE applies SET log = ? WHERE id = ?", (str(dest), apply_id))
-            write_log(store, root, apply_id, dest)
-            log_p.unlink()
-            store.commit()
-            kept.append(dest)
-        if created_dir:
-            try:
-                log_p.parent.rmdir()            # only when empty: anything put there since stays
-            except OSError:
-                pass
     except OSError as e:
         store.db.rollback()
-        error = f"palautus keskeytyi: {e.strerror or e}{f': {e.filename}' if e.filename else ''}"
+        error = f"palautus keskeytyi: {e.strerror or e}{f': {e.filename}' if e.filename else ''}; yritä uudelleen"
         store.db.execute("UPDATE applies SET error = ? WHERE id = ?", (error, apply_id))
         store.commit()
         raise ApplyFailed(apply_id, error) from e
-    return {"missing": missing, "kept": [str(p) for p in kept], "undone_dir": str(keep_dir)}
+    store.db.execute(
+        "UPDATE shots SET state = 'present' WHERE state = 'moved' AND id IN "
+        "(SELECT shot_id FROM apply_ops WHERE apply_id = ? AND kind = 'move')", (apply_id,))
+    store.db.execute("UPDATE applies SET status = 'undone', error = '', undone_at = ? WHERE id = ?",
+                     (time.time(), apply_id))
+    log_dest = _move_log(store, root, apply_id, Path(log), keep_dir)
+    store.commit()
+    if created_dir:
+        try:
+            Path(log).parent.rmdir()            # only when empty: anything put there since stays
+        except OSError:
+            pass
+    return {"missing": missing, "created": created, "changed": changed,
+            "log": log_dest and str(log_dest), "undone_dir": str(keep_dir)}
+
+
+def _move_log(store: Store, root: Path, apply_id: int, log: Path, keep_dir: Path) -> Path | None:
+    """The log goes, updated, with the other files restore keeps, so the event folder is again as it was. Best
+    effort: the files are already back, and the database has the log too."""
+    if not os.path.lexists(log):
+        return None
+    try:
+        dest = _free(keep_dir / log.name)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        store.db.execute("UPDATE applies SET log = ? WHERE id = ?", (str(dest), apply_id))
+        write_log(store, root, apply_id, dest)
+        log.unlink()
+    except OSError:
+        store.db.execute("UPDATE applies SET log = ? WHERE id = ?", (str(log), apply_id))
+        return None
+    return dest
 
 
 def _free(path: Path) -> Path:

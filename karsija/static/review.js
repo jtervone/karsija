@@ -134,21 +134,23 @@ export function reduce(state, action) {
 }
 
 /**
- * Shots and decisions of event `eventId`, reloaded whenever `version` changes.
+ * Shots and decisions of event `eventId`, reloaded whenever `version` changes. A change of `epoch` (an apply or
+ * restore) empties the page's undo stack.
  *
- * Returns `{ data, groups, shots, error, notice, failure, decide, accept, undo, notify, dismiss }`: `shots` maps a
+ * Returns `{ data, groups, shots, error, notice, failure, decide, accept, undo, notify, dismiss, settled }`: `shots` maps a
  * shot id to
  * the shot with its decision as last made here; `data` is null while the event loads. Decisions are written one at
  * a time in the order they were made, so an undo always reaches the server after the decision it undoes.
  */
-export function useReview(eventId, version) {
+export function useReview(eventId, version, epoch = 0) {
   const [state, dispatch] = useReducer(reduce, EMPTY);
   const done = useRef(0);                  // writes stored so far
   const chain = useRef(Promise.resolve());
   const undoStack = useRef([]);            // decisions made on this page: { prev: Map shot id -> old decision }
   const loading = useRef(0);               // loads under way
 
-  useEffect(() => { undoStack.current = []; }, [eventId]);
+  // a new event, or an apply or restore (`epoch`): the decisions before it can no longer be undone from here
+  useEffect(() => { undoStack.current = []; }, [eventId, epoch]);
   useEffect(() => {
     let current = true;
     const since = done.current;

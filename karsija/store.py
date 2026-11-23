@@ -382,6 +382,10 @@ class Store:
         self.db.execute("DELETE FROM decisions WHERE batch = ?", (batch,))
         return batch, sorted({r[1] for r in rows})
 
+    def forget_decisions(self, shot_ids: Collection[int]) -> None:
+        """Take these shots' decisions off the undo stack (they stay in ``shots``)."""
+        self.db.executemany("DELETE FROM decisions WHERE shot_id = ?", [(i,) for i in shot_ids])
+
     # ----------------------------------------------------------------------- #
     # Jobs
     # ----------------------------------------------------------------------- #

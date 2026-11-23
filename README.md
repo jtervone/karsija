@@ -99,7 +99,8 @@ Ctrl+Z undoes the last decision stored on the server, even one made before the p
 (the page then says so).
 
 **Toteuta** (in the toolbar) carries out the event's decisions in the library. It first shows what it would do
-(*siirretään N kuvaa, kirjoitetaan M XMP:tä, K tarkistamatta*) and does nothing until confirmed:
+(*siirretään N kuvaa, kirjoitetaan M XMP:tä, K tarkastamatta*) and does nothing until confirmed. While it is open,
+the review keys do nothing and Esc closes it (except while the apply runs):
 
 - Each shot you rejected moves into the event folder's `_karsitut/`, with its RAW, its JPEG and its sidecars of both
   styles (`name.xmp`, `name.ext.xmp`).
@@ -107,17 +108,20 @@ Ctrl+Z undoes the last decision stored on the server, even one made before the p
   does (see above): a reject is -1 / Red, a keep your stars or else 3 (best 5 / Green). A keep without stars leaves a
   sidecar that holds a rating or label of your own alone; the confirmation counts those.
 - Shots without a decision are never touched, whatever their stars or automatic verdict.
+- The apply's log goes into `_karsitut/` too, so the folder is made even when no shot is rejected.
 - Nothing is overwritten. A file already in `_karsitut/` under the same name, a sidecar that is not valid XMP or is
-  read-only, or a file of the shot that has gone, is listed as a conflict, and Toteuta cannot be confirmed until it
-  is fixed. If the files or decisions change between the confirmation and the click (another tab, another program),
+  read-only, a file of the shot that has gone (analyse the event again), or a `_karsitut` that is a symlink or not a
+  folder, is listed as a conflict with what to do, and Toteuta cannot be confirmed until it is fixed. If the files or decisions change between the confirmation and the click (another tab, another program),
   the server refuses with *suunnitelma on muuttunut* and nothing changes; check the plan again.
 
-The moved shots leave the grid. Under the grid, **Toteutukset** lists the event's applies; **Palauta karsitut**
+The moved shots leave the grid and no longer count in the event's or Kirjasto's numbers. Ctrl+Z no longer undoes
+the decisions an apply carried out; restore the apply instead. Under the grid, **Toteutukset** lists the event's applies; **Palauta karsitut**
 reverses one: the files move back, the sidecars get their earlier content back, and the sidecars the apply created
 move into `~/.cache/karsija/undone/<id>/` (`$XDG_CACHE_HOME/karsija/undone/` when that is set), with the apply's log.
 A sidecar changed since the apply (e.g. in darktable) is copied there before its earlier content is written back.
-Nothing is deleted; `_karsitut/` is removed only if the apply made it and it is empty again. Restore the newest apply
-of an event first. Your decisions stay as they were, so the event can be applied again.
+Nothing is deleted; `_karsitut/` is removed only if the apply made it and it is empty again. Only the newest apply
+of an event not yet restored can be restored; restore them newest first. A file the apply was to write through a
+path that now leads out of the library (a symlink put there since) stops the restore before it changes anything. Your decisions stay as they were, so the event can be applied again.
 
 Every operation is logged before anything changes, in the server's database and in
 `<event>/_karsitut/karsija-apply-<id>.json` (with each sidecar's earlier content), so an apply cut short by a crash
@@ -210,14 +214,21 @@ use them). Toteuta and its history:
 - `GET /api/events/{id}/apply-plan`: a dry run. `move` (the rejects and their files), `xmp_create` and
   `xmp_update` (sidecars), `user_values` (sidecars left alone), `unreviewed` (shots without a decision),
   `conflicts` (`path` and `reason`) and `confirm_token`.
-- `POST /api/events/{id}/apply` with `{"confirm_token": "…"}` carries out that plan. `409` when the plan has changed
-  since the token was given, has conflicts or nothing to do, or an analysis of the event is queued or running;
-  nothing is changed then. `500` when an operation failed part way; the apply is then `failed` and can be restored.
-- `GET /api/events/{id}/applies`: the event's applies, newest first: `status` (`done`, `failed`, `undone`),
-  `shots_moved`, `files_moved`, `xmp_created`, `xmp_updated`, `log`.
+- `POST /api/events/{id}/apply` with `{"confirm_token": "…"}` carries out that plan and returns `{"apply": …}`,
+  shaped as in `/applies`. `409` when the plan has changed since the token was given, has conflicts or nothing to
+  do, or an analysis of the event is queued or running; nothing is changed then. `500` when an operation failed part
+  way; the apply is then `failed` and can be restored. `404` for an unknown event.
+- `GET /api/events/{id}/applies`: the event's applies, newest first: `id`, `status` (`running`, `done`, `failed`,
+  `undone`), `error` (why it failed or why its restore stopped), `started`, `finished` and `undone_at` (Unix
+  seconds), `shots_moved`, `files_moved`, `xmp_created`, `xmp_updated` (as planned), `ops` and `done` (operations
+  planned and done) and `log` (where its JSON log is). An apply still running when the server stopped is `failed`
+  after a restart, with `error` saying so, and can be restored.
 - `POST /api/applies/{id}/restore` reverses one. `409` when it is restored already, a newer apply of the event is
-  not, or a moved file is back in its place while its copy is still in `_karsitut/` (nothing is changed then).
-  Returns `missing` (moved files found nowhere) and `kept` (files put into `undone_dir`).
+  not, a moved file is back in its place while its copy is still in `_karsitut/`, or a path now leads out of the
+  library; nothing is changed then. `404` for an unknown apply. `500` when it stops part way (the reason is in the
+  apply's `error`); run it again. Returns the `apply`, `missing` (moved files found nowhere), `created` (the
+  sidecars the apply created), `changed` (copies of sidecars changed since the apply), `log` (where the log went)
+  and `undone_dir` (the apply's folder in the undone folder, where those are).
 
 ```sh
 TOKEN=$(curl -s localhost:8765/api/events/1/apply-plan | python3 -c 'import json,sys; print(json.load(sys.stdin)["confirm_token"])')
