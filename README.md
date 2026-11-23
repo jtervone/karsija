@@ -90,18 +90,21 @@ picks a shot, a double-click opens it (like Enter). The whole event can be revie
 | Ctrl+Z | undo the last decision (a Space counts as one); again to go further back |
 | Enter, C | open the shot (in compare, the selected one) in the loupe, compare the group's shots |
 | Z | in the loupe and compare: zoom in (100 %, or 200 % on a 2× screen) around the pointer (or the centre; in compare, of the selected pane) / fit |
-| Esc | back to the grid; in the grid, closes the message under the toolbar |
+| Esc | back to the grid; in the grid, closes the message under the toolbar, then Asetukset |
 | ? | all of these on the page |
 
 **Asetukset** (in the grid's toolbar) opens the grouping and judging thresholds, the same for every event: the
 sharpness limit (`abs_blur`), the fraction of the event's median under which a shot is blurry (`rel_blur`), the
 seconds between shots of a group (`gap`), how different shots of a group may look (`hamming`, dHash bits) and how
 sharp a group's other shots must be to be kept beside its best (`sim_keep`, 0 = only the best). Beside them, the
-event's sharpness as a histogram on a logarithmic axis, with lines at the limit and at `rel_blur` × the median; the
-lines move while the sliders do, the shots under the higher one (judged blurry) are red, and the caption counts them.
-**Käytä** stores the thresholds and groups and judges every analysed event again from the stored metrics (no image is
-analysed again); the grid, its counts and Kirjasto's then show the new verdicts. Your decisions stay as they are,
-also on shots whose group or verdict changes.
+event's sharpness as a histogram on a logarithmic axis, with lines at the limit and at `rel_blur` × the median (the
+dotted line); the lines move while the sliders do, the part of each bar under the higher one (the shots judged
+blurry) is red, and the caption counts them. Nothing changes until **Käytä**, which stores the thresholds and groups
+and judges every analysed event again from the stored metrics (no image is analysed again); the grid, its counts and
+Kirjasto's then show the new verdicts. Your decisions stay as they are, also on shots whose group or verdict changes.
+**Peru muutokset** puts the sliders back to the stored values, **Oletukset** to the defaults (a threshold at its
+default follows it, also if a later version changes it). Esc or × closes the panel; a change not yet applied stays
+in it until the event view is left.
 
 Decisions show at once and are saved in the background, one at a time in the order they were made. One the server
 refuses is taken back, and its error stays under the toolbar until closed (× or Esc), counting further failures.
@@ -210,12 +213,16 @@ server stops shows as failed after a restart; start it again. Asking for an anal
 is still queued or running returns that job (200) instead of starting another.
 
 The server groups and judges with its own thresholds, by default those of `scan` (`GET /api/settings`); the `scan`
-threshold flags do not apply to it. `PUT /api/settings` with any of `{"abs_blur": ≥ 0, "rel_blur": 0–1, "gap": 0–3600
-(seconds), "hamming": 0–256, "sim_keep": 0–1}` changes them (a field left out keeps its value, `null` puts back its
-default) and groups and judges every analysed event again from the stored metrics, without analysing any image.
+threshold flags do not apply to it. `PUT /api/settings` with at least one of `{"abs_blur": 0–1000000, "rel_blur":
+0–1, "gap": 0–3600 (seconds), "hamming": 0–256 (an integer), "sim_keep": 0–1}` changes them (a field left out keeps
+its value; `null`, or the default's own value, puts back the default) and groups and judges every analysed event
+again from the stored metrics, without analysing any image. An empty body, an unknown field or a value out of range
+is refused with `422` and changes nothing.
 Decisions stay as they are, also on shots whose group or verdict changes, and so does the undo stack. It returns the
 `settings` in effect and how many `events` were judged again. `/api/events/{id}` also has `default_settings`,
-`median_sharp` and `sharpness` (the sharpness of each analysed shot, for the histogram).
+`sharpness` (for the histogram: the sharpness of each shot of the event that is in place and was analysed without
+error, in ascending order) and `median_sharp`, their median as the judging takes it (of an even count, the mean of
+the middle two): `rel_blur` × `median_sharp` is the relative blur limit.
 
 `GET /api/shots/{id}` returns one shot with its `exif`, which the shots of `/api/events/{id}` leave out:
 `datetime_original`, `exposure_time` (seconds), `f_number`, `iso`, `focal_length` and `focal_length_35mm` (mm),

@@ -12,6 +12,7 @@ import json
 import multiprocessing
 import queue
 import sqlite3
+import statistics
 import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Iterator, Sequence
@@ -262,9 +263,10 @@ class ApplyRequest(BaseModel):
 
 
 class SettingsRequest(BaseModel):
-    """Thresholds to change; a field left out keeps its value, ``null`` puts back its default."""
+    """Thresholds to change; a field left out keeps its value, ``null`` (or the default value) puts back its
+    default."""
     model_config = ConfigDict(extra="forbid")
-    abs_blur: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    abs_blur: float | None = Field(default=None, ge=0, le=1e6, allow_inf_nan=False)
     rel_blur: float | None = Field(default=None, ge=0, le=1)
     gap: float | None = Field(default=None, ge=0, le=3600)
     hamming: int | None = Field(default=None, ge=0, le=256)
@@ -508,7 +510,7 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
             "event": summary[0],
             "settings": store.settings(),
             "default_settings": DEFAULT_SETTINGS,
-            "median_sharp": sharp[len(sharp) // 2] if sharp else None,
+            "median_sharp": statistics.median(sharp) if sharp else None,   # as judge() takes it
             "sharpness": sharp,                 # histogram data
             "groups": [{"group_id": gid, "shots": shots} for gid, shots in groups.items()],
         }
@@ -672,7 +674,9 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
             raise HTTPException(422, "anna ainakin yksi asetus")
         with apply_lock:                # an apply's plan must not change between its check and its run
             store.begin_write()
-            store.set_settings({k: getattr(body, k) for k in body.model_fields_set})
+            # a value equal to its default follows the default, also if a later version changes it
+            store.set_settings({k: None if getattr(body, k) == DEFAULT_SETTINGS[k] else getattr(body, k)
+                                for k in body.model_fields_set})
             settings = store.settings()
             events = rejudge(store, settings)
             store.commit()

@@ -229,7 +229,8 @@ export function EventView({ route, version: jobsVersion }) {
       else if (review.failure || review.notice) {
         review.dismiss();
         review.notify(null);
-      } else return false;
+      } else if (settingsOpen) setSettingsOpen(false);
+      else return false;
       return true;
     }
     if (action.type === 'zoom') return route.view !== 'event' && viewKeys.current ? viewKeys.current(action) : false;
@@ -336,7 +337,7 @@ export function EventView({ route, version: jobsVersion }) {
     </header>
     ${review.error && !data && html`<p class="error">Tapahtumaa ei voi ladata: ${review.error}</p>`}
     ${!data && !review.error && html`<p class="muted">Ladataan…</p>`}
-    ${data && route.view === 'event' && settingsOpen && html`<${SettingsPanel} data=${data}
+    ${data && route.view === 'event' && html`<${SettingsPanel} data=${data} hidden=${!settingsOpen}
       onApplied=${settingsApplied} onClose=${() => setSettingsOpen(false)} />`}
     ${data && route.view === 'event' && (shots.size === 0
       ? html`<p class="muted">${ev.analysed_at == null
