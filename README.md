@@ -4,7 +4,7 @@ Photo culling helper. It walks a library of event folders, scores every photo fo
 near-identical shots (bursts, repeats) inside each event, picks the best of each group and suggests which shots to
 keep and which to reject. You review the suggestions in the browser (`karsija serve`), and only then are your
 decisions carried out in the library: rejects move into a `_karsitut/` subfolder and ratings go into the XMP
-sidecars. **Nothing is ever deleted**, and every apply can be undone.
+sidecars. **Nothing is ever deleted**, and every apply in the browser (Toteuta) can be undone.
 
 `karsija scan` does the same analysis in one batch and writes an HTML report instead (see [`scan`](#scan)).
 
@@ -13,14 +13,15 @@ sidecars. **Nothing is ever deleted**, and every apply can be undone.
 Python 3.12 or newer and [uv](https://docs.astral.sh/uv/):
 
 ```sh
-uv tool install .       # install the `karsija` command
-uv sync                 # or, in a development checkout: then `uv run karsija …`
+uv tool install .       # installs the `karsija` command
+uv sync                 # or, in a development checkout; then run it as `uv run karsija …`
 ```
 
 Dependencies: numpy, opencv-python-headless, pillow, rawpy, fastapi and uvicorn, all installed by uv.
 
-RAW files are read with [rawpy](https://github.com/letmaik/rawpy) (LibRaw), which has wheels for the common
-platforms. If it cannot be installed or imported, karsija still runs: a RAW+JPEG pair is analysed and previewed
+RAW files are read with [rawpy](https://github.com/letmaik/rawpy) (LibRaw), a required dependency with wheels for
+the common platforms; where it has none, the install fails. If rawpy is installed but cannot be imported (e.g. a
+broken LibRaw), karsija still runs: a RAW+JPEG pair is analysed and previewed
 from its JPEG, but a RAW without a JPEG cannot be analysed (it is judged *error* and never suggested for rejection)
 and its preview fails with `RAW-kuvan esikatselu vaatii rawpy-paketin`.
 
@@ -33,7 +34,7 @@ and its preview fails with `RAW-kuvan esikatselu vaatii rawpy-paketin`.
       DSC_0001.NEF                a shot: files with the same stem (RAW + JPEG)
       DSC_0001.JPG
       DSC_0001.NEF.xmp            sidecars (darktable style name.ext.xmp, or name.xmp)
-      _karsitut/                  rejects moved here by Toteuta
+      _karsitut/                  rejects moved here by Toteuta (or scan --move)
     2025-06-20/
 ```
 
@@ -94,8 +95,9 @@ blurry, **Vain ryhmät** only groups of more than one shot, **Vain tarkastamatto
 picks a shot, a double-click opens it (like Enter). The whole event can be reviewed with the keyboard (see
 [Keyboard shortcuts](#keyboard-shortcuts)).
 
-Decisions show at once and are saved in the background, one at a time in the order they were made. One the server
-refuses is taken back, and its error stays under the toolbar until closed (× or Esc), counting further failures.
+Decisions show at once and are saved in the background, one at a time in the order they were made. A decision the
+server refuses is taken back, and the error stays under the toolbar until closed (× or Esc); further failures are
+counted there.
 Ctrl+Z undoes the last decision stored on the server, even one made before the page was opened or in another event
 (the page then says so).
 
@@ -172,8 +174,10 @@ dialog is open, the review keys do nothing.
 
 ## Safety model
 
-- **Nothing is deleted.** karsija only moves files within the event folder and writes XMP sidecars; restoring
-  moves them back.
+In `karsija serve`:
+
+- **Nothing is deleted.** karsija moves files within the event folder and writes XMP sidecars and its apply log;
+  restoring moves the files back and sets the sidecars the apply created aside in `~/.cache/karsija/undone/`.
 - **Decisions live only in the server's database** until you apply them. Reviewing, analysing and changing the
   thresholds never touch the library; the server writes into it only when an event is applied (Toteuta) or
   restored (Palauta karsitut).
@@ -183,6 +187,10 @@ dialog is open, the review keys do nothing.
 - **XMP is merged, not replaced**: only the rating and label are written, everything else in the sidecar stays.
 - **Every apply is logged and can be reversed** with Palauta karsitut.
 - **The server listens on loopback only** by default.
+
+`karsija scan` is different: `--move` and `--write-xmp` act on the automatic verdicts directly, without review. They
+are not logged and cannot be restored with Palauta karsitut (`--move` can only be undone by moving the files back by
+hand), and `--xmp-overwrite` replaces your own ratings and labels without keeping a copy.
 
 ### Toteuta
 
