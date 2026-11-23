@@ -9,7 +9,8 @@ from typing import Any
 import cv2
 import numpy as np
 
-from karsija.library import JPEG_EXT, capture_time, exif_metadata, load_image
+from karsija import previews
+from karsija.library import capture_time, exif_metadata, load_image
 
 GRID = 8                      # sharpness tiles per axis
 MIN_HIST = 0.9                # colour histogram correlation that lets a looser dHash match group
@@ -113,14 +114,20 @@ def hist_similarity(a: list[float], b: list[float]) -> float:
     return float(cv2.compareHist(np.asarray(a, dtype=np.float32), np.asarray(b, dtype=np.float32), cv2.HISTCMP_CORREL))
 
 
-def analyse_file(primary: str, files: list[str]) -> Shot:
+def analyse_file(primary: str, files: list[str], preview: tuple[Path, str] | None = None) -> Shot:
+    """Metrics of one shot. ``preview``: ``(cache dir, signature)``, also write its previews from the decoded image."""
     shot = Shot(key=primary, files=files)
     try:
         # Prefer an out-of-camera JPEG for analysis if one exists (faster, full res)
-        src = next((f for f in files if Path(f).suffix.lower() in JPEG_EXT), primary)
-        bgr, pil = load_image(Path(src))
+        src = previews.source_file(primary, files)
+        bgr, pil = load_image(src)
+        if preview is not None and pil is not None:
+            try:
+                previews.write_all(pil, *preview)
+            except Exception:  # noqa: BLE001
+                pass            # made on request instead; a full disk must not fail the analysis
         gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-        shot.taken = capture_time(Path(src), pil)
+        shot.taken = capture_time(src, pil)
         shot.exif = exif_metadata(pil)
         shot.sharp, shot.sharp_global = sharpness(gray)
         shot.clip_hi = float((gray >= 250).mean())

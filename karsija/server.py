@@ -26,12 +26,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from karsija import previews
 from karsija.analysis import Shot, analyse_file, group_and_judge
 from karsija.library import JPEG_EXT, RAW_EXT, UnsafePath, collect_shots, find_event_dirs, safe_path
 from karsija.store import UNSET, Store
 
 STATIC_DIR = Path(__file__).parent / "static"
 KEEPALIVE = 15.0              # seconds between SSE comments on an idle stream
+PREVIEW_MAX_AGE = 365 * 24 * 3600   # seconds a browser may keep a preview without asking again
 SUGGESTION = {"best": "keep", "keep": "keep", "similar": "reject", "blurry": "reject"}   # auto verdict -> decision
 
 _SHOT_COLS = ("id, event_id, key, files, taken, sharp, sharp_global, clip_hi, clip_lo, error, group_id, "
@@ -102,6 +104,16 @@ def sync_events(store: Store, root: Path) -> list[tuple[int, Path]]:
     return out
 
 
+def inside_root(root: Path, files: list[str]) -> bool:
+    """Every file of a shot resolves inside the library root (no symlink out of it)."""
+    try:
+        for f in files:
+            safe_path(root, Path(f).relative_to(root).as_posix())
+    except (UnsafePath, ValueError):
+        return False
+    return True
+
+
 def job_error(e: Exception) -> str:
     """Message of a failed job: plain Finnish for the expected failures, the exception otherwise."""
     if isinstance(e, BrokenProcessPool):
@@ -114,10 +126,12 @@ def job_error(e: Exception) -> str:
 
 
 class JobRunner:
-    """Runs analysis jobs one at a time in a thread; the image work goes to a process pool."""
+    """Runs analysis jobs one at a time in a thread; the image work goes to a process pool, which also writes the
+    previews of the shots it analyses into ``preview_dir``."""
 
-    def __init__(self, root: Path, db_path: Path, workers: int, broker: Broker):
+    def __init__(self, root: Path, db_path: Path, workers: int, broker: Broker, preview_dir: Path):
         self.root, self.db_path, self.workers, self.broker = root, db_path, workers, broker
+        self.preview_dir = preview_dir
         self._queue: queue.Queue[tuple[int, str] | None] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._pool: cf.ProcessPoolExecutor | None = None
@@ -166,7 +180,7 @@ class JobRunner:
                 if not folder.is_dir():
                     continue
                 for primary, files in collect_shots(folder):
-                    if not self._inside_root(files):
+                    if not inside_root(self.root, files):
                         continue
                     on_disk[event_id].add(primary)
                     sig = Store.signature(files)
@@ -180,7 +194,8 @@ class JobRunner:
 
             if todo:
                 pool = self._get_pool()
-                futs.update({pool.submit(analyse_file, p, f): (eid, sig) for eid, p, f, sig in todo})
+                futs.update({pool.submit(analyse_file, p, f, (self.preview_dir, sig)): (eid, sig)
+                             for eid, p, f, sig in todo})
                 for done, fut in enumerate(cf.as_completed(futs), 1):
                     eid, sig = futs[fut]
                     store.put(eid, fut.result(), sig)
@@ -203,14 +218,6 @@ class JobRunner:
             self._publish(store, job_id, status="failed", error=job_error(e), finished=time.time())
         finally:
             store.close()
-
-    def _inside_root(self, files: list[str]) -> bool:
-        try:
-            for f in files:
-                safe_path(self.root, Path(f).relative_to(self.root).as_posix())
-        except (UnsafePath, ValueError):
-            return False
-        return True
 
     def _get_pool(self) -> cf.ProcessPoolExecutor:
         if self._pool is None:
@@ -308,15 +315,19 @@ Db = Annotated[Store, Depends(get_store, scope="function")]
 
 
 def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[], None] | None = None,
-               allowed_hosts: Collection[str] = LOOPBACK_HOSTS, docs: bool = False) -> FastAPI:
+               allowed_hosts: Collection[str] = LOOPBACK_HOSTS, docs: bool = False,
+               preview_dir: Path | None = None) -> FastAPI:
     """``allowed_hosts``: accepted ``Host`` header names, see ``RequestGuard``.
+
+    ``preview_dir``: preview cache, by default ``previews.default_cache_dir()``.
 
     ``docs`` turns on Swagger UI at ``/docs``. It loads its scripts from cdn.jsdelivr.net into the server's origin,
     so it is off unless asked for. ReDoc is always off.
     """
     root = root.resolve()
+    preview_cache = previews.PreviewCache(preview_dir or previews.default_cache_dir())
     broker = Broker()
-    runner = JobRunner(root, db_path, workers, broker)
+    runner = JobRunner(root, db_path, workers, broker, preview_cache.cache_dir)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -333,6 +344,7 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
     app = FastAPI(title="karsija", lifespan=lifespan, docs_url="/docs" if docs else None, redoc_url=None)
     app.add_middleware(RequestGuard, allowed_hosts=allowed_hosts)
     app.state.root, app.state.db_path, app.state.runner, app.state.broker = root, db_path, runner, broker
+    app.state.previews = preview_cache
 
     def rel(path: str) -> str:
         try:
@@ -448,6 +460,32 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
         if not rows:
             raise HTTPException(404, "kuvaa ei ole")
         return shot_json(rows[0])
+
+    @app.get("/api/shots/{shot_id}/preview")
+    def preview(shot_id: int, store: Db, request: Request,
+                size: Literal["grid", "full"] = "grid") -> Response:
+        """Upright JPEG of the shot, long edge 400 px (``grid``) or 2560 px (``full``). Made on first request if the
+        analysis has not made it yet. The ``ETag`` changes whenever a file of the shot changes."""
+        row = store.db.execute("SELECT key, files FROM shots WHERE id = ?", (shot_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "kuvaa ei ole")
+        key, files = row[0], json.loads(row[1])
+        if not inside_root(root, [key, *files]):
+            raise HTTPException(403, "polku ei ole kirjastossa")
+        try:
+            sig = Store.signature(files)
+        except OSError:
+            raise HTTPException(404, "tiedostoa ei ole") from None
+        headers = {"ETag": f'"{previews.etag(sig)}-{size}"', "Cache-Control": f"private, max-age={PREVIEW_MAX_AGE}"}
+        if headers["ETag"] in [t.strip() for t in request.headers.get("if-none-match", "").split(",")]:
+            return Response(status_code=304, headers=headers)
+        try:
+            path = preview_cache.get(key, files, sig, size)
+        except FileNotFoundError:
+            raise HTTPException(404, "tiedostoa ei ole") from None
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(500, f"esikatselua ei voi tehdä: {type(e).__name__}: {e}") from None
+        return FileResponse(path, media_type="image/jpeg", headers=headers)
 
     @app.patch("/api/shots/{shot_id}")
     def decide(shot_id: int, body: DecisionRequest, store: Db) -> dict[str, Any]:

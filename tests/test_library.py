@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import io
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 import numpy as np
 import pytest
-from conftest import EVENT, EXIF_META, T0, Library, texture
+from conftest import EVENT, EXIF_META, T0, Library, fake_rawpy, jpeg_bytes, texture
 from PIL import Image
 
 from karsija import library as library_mod
@@ -47,39 +45,6 @@ def test_capture_time_uses_exif_subseconds(library: Library) -> None:
 def test_capture_time_falls_back_to_mtime(library: Library) -> None:
     path = library.path("sharp.jpg")
     assert capture_time(path, None) == path.stat().st_mtime
-
-
-class FakeRaw:
-    def __init__(self, thumb: SimpleNamespace | None, rgb: np.ndarray):
-        self.thumb, self.rgb = thumb, rgb
-
-    def __enter__(self) -> FakeRaw:
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        return None
-
-    def extract_thumb(self) -> SimpleNamespace:
-        if self.thumb is None:
-            raise RuntimeError("no thumbnail")
-        return self.thumb
-
-    def postprocess(self, **kwargs: Any) -> np.ndarray:
-        return self.rgb
-
-
-def fake_rawpy(thumb: SimpleNamespace | None, rgb: np.ndarray, opened: list[str]) -> SimpleNamespace:
-    def imread(path: str) -> FakeRaw:
-        opened.append(path)
-        return FakeRaw(thumb, rgb)
-
-    return SimpleNamespace(imread=imread, ThumbFormat=SimpleNamespace(JPEG="jpeg", BITMAP="bitmap"))
-
-
-def jpeg_bytes(rgb: np.ndarray) -> bytes:
-    buf = io.BytesIO()
-    Image.fromarray(rgb).save(buf, "JPEG", quality=95)
-    return buf.getvalue()
 
 
 RGB = np.stack([texture(7, 1600, 1200)] * 3, axis=-1)

@@ -26,8 +26,11 @@ ANALYSIS_EDGE = 1024          # long edge used for all measurements
 # --------------------------------------------------------------------------- #
 # Image loading
 # --------------------------------------------------------------------------- #
-def load_image(path: Path) -> tuple[np.ndarray, Image.Image | None]:
-    """Return BGR image (downscaled) and the PIL image for EXIF."""
+def open_image(path: Path, draft: int | None = None) -> Image.Image:
+    """Decoded image at full size, as stored (EXIF orientation not applied). RAW gives its embedded JPEG preview.
+
+    ``draft``: a JPEG may be decoded at a reduced scale, as long as both sides stay at least this many pixels.
+    """
     pil: Image.Image
     if path.suffix.lower() in RAW_EXT:
         if rawpy is None:
@@ -39,6 +42,8 @@ def load_image(path: Path) -> tuple[np.ndarray, Image.Image | None]:
                 thumb = None
             if thumb is not None and thumb.format == rawpy.ThumbFormat.JPEG:
                 pil = Image.open(io.BytesIO(thumb.data))
+                if draft:
+                    pil.draft("RGB", (draft, draft))
                 pil.load()
             elif thumb is not None and thumb.format == rawpy.ThumbFormat.BITMAP:
                 pil = Image.fromarray(np.asarray(thumb.data))
@@ -47,8 +52,15 @@ def load_image(path: Path) -> tuple[np.ndarray, Image.Image | None]:
                 pil = Image.fromarray(rgb)
     else:
         pil = Image.open(path)
+        if draft:
+            pil.draft("RGB", (draft, draft))
         pil.load()
+    return pil
 
+
+def load_image(path: Path) -> tuple[np.ndarray, Image.Image | None]:
+    """Return BGR image (downscaled) and the PIL image for EXIF."""
+    pil = open_image(path)
     pil_rot = _apply_orientation(pil)
     rgb = np.asarray(pil_rot.convert("RGB"))
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)

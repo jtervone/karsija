@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import io
+import os
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import cv2
 import numpy as np
@@ -63,6 +68,52 @@ def save_jpeg(path: Path, gray: np.ndarray, taken: datetime) -> None:
 # karsija.library.exif_metadata() of every synthetic JPEG, without datetime_original
 EXIF_META = {"camera": "NIKON Z 6", "exposure_time": 0.004, "f_number": 2.8, "iso": 400, "focal_length": 50.0,
              "lens": "NIKKOR Z 50mm f/1.8 S"}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def preview_cache_home(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
+    """Previews go to a temporary cache directory, never to ~/.cache."""
+    home = tmp_path_factory.mktemp("cache")
+    old = os.environ.get("XDG_CACHE_HOME")
+    os.environ["XDG_CACHE_HOME"] = str(home)
+    yield home
+    if old is None:
+        del os.environ["XDG_CACHE_HOME"]
+    else:
+        os.environ["XDG_CACHE_HOME"] = old
+
+
+class FakeRaw:
+    def __init__(self, thumb: SimpleNamespace | None, rgb: np.ndarray):
+        self.thumb, self.rgb = thumb, rgb
+
+    def __enter__(self) -> FakeRaw:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def extract_thumb(self) -> SimpleNamespace:
+        if self.thumb is None:
+            raise RuntimeError("no thumbnail")
+        return self.thumb
+
+    def postprocess(self, **kwargs: Any) -> np.ndarray:
+        return self.rgb
+
+
+def fake_rawpy(thumb: SimpleNamespace | None, rgb: np.ndarray, opened: list[str]) -> SimpleNamespace:
+    def imread(path: str) -> FakeRaw:
+        opened.append(path)
+        return FakeRaw(thumb, rgb)
+
+    return SimpleNamespace(imread=imread, ThumbFormat=SimpleNamespace(JPEG="jpeg", BITMAP="bitmap"))
+
+
+def jpeg_bytes(rgb: np.ndarray) -> bytes:
+    buf = io.BytesIO()
+    Image.fromarray(rgb).save(buf, "JPEG", quality=95)
+    return buf.getvalue()
 
 
 @dataclass

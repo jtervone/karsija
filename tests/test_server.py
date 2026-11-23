@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import os
 import shutil
 import sqlite3
@@ -15,7 +16,9 @@ import pytest
 from conftest import BURST, EVENT, EXIF_META, EXPECTED, T0, Library, save_jpeg, texture
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from PIL import Image
 
+from karsija import previews
 from karsija import server as server_mod
 from karsija.server import LOOPBACK_HOSTS, Broker, JobRunner, create_app, host_name
 from karsija.store import Store
@@ -520,6 +523,68 @@ def test_failed_commit_is_an_error(own: Server, monkeypatch: pytest.MonkeyPatch)
 
 
 # --------------------------------------------------------------------------- #
+# Previews
+# --------------------------------------------------------------------------- #
+def test_analysis_writes_previews(server: Server) -> None:
+    cache: previews.PreviewCache = server.app.state.previews
+    for name in ("sharp.jpg", "DSC_0100.NEF"):
+        files = [str(server.root.resolve() / f) for f in server.shots()[name]["files"]]
+        sig = Store.signature(files)
+        assert all(previews.preview_path(cache.cache_dir, sig, size).is_file() for size in previews.SIZES), name
+
+
+@pytest.mark.parametrize(("size", "dims"), [("grid", (400, 300)), ("full", (800, 600))])   # never scaled up
+def test_preview_sizes(server: Server, size: str, dims: tuple[int, int]) -> None:
+    shot_id = server.shots()["sharp.jpg"]["id"]
+    resp = server.client.get(f"/api/shots/{shot_id}/preview", params={"size": size})
+    assert resp.status_code == 200 and resp.headers["content-type"] == "image/jpeg"
+    assert Image.open(io.BytesIO(resp.content)).size == dims
+    assert resp.headers["etag"].endswith(f'-{size}"')
+    assert resp.headers["cache-control"] == f"private, max-age={server_mod.PREVIEW_MAX_AGE}"
+    again = server.client.get(f"/api/shots/{shot_id}/preview", params={"size": size},
+                              headers={"If-None-Match": resp.headers["etag"]})
+    assert again.status_code == 304 and again.headers["etag"] == resp.headers["etag"] and not again.content
+
+
+def test_preview_default_size_and_errors(server: Server) -> None:
+    shot_id = server.shots()["sharp.jpg"]["id"]
+    resp = server.client.get(f"/api/shots/{shot_id}/preview")
+    assert Image.open(io.BytesIO(resp.content)).size == (400, 300)
+    assert server.client.get(f"/api/shots/{shot_id}/preview", params={"size": "huge"}).status_code == 422
+    assert server.client.get("/api/shots/99999/preview").status_code == 404
+
+
+def test_preview_is_cached_until_the_file_changes(own: Server, monkeypatch: pytest.MonkeyPatch) -> None:
+    made: list[str] = []
+    make = previews.make
+    monkeypatch.setattr(previews, "make", lambda *a: made.append(a[-1]) or make(*a))
+    shot_id = own.shots()["sharp.jpg"]["id"]
+    url = f"/api/shots/{shot_id}/preview"
+    first = own.client.get(url)
+    assert own.client.get(url).content == first.content
+    assert made == []                                             # made by the analysis already
+
+    src = own.root / EVENT / "sharp.jpg"
+    save_jpeg(src, texture(8), T0)                                # another picture
+    st = src.stat()
+    os.utime(src, (st.st_atime, st.st_mtime + 10))
+    changed = own.client.get(url, headers={"If-None-Match": first.headers["etag"]})
+    assert changed.status_code == 200 and changed.headers["etag"] != first.headers["etag"]
+    assert changed.content != first.content and made == ["grid"]
+    assert own.client.get(url).content == changed.content and made == ["grid"]
+
+    src.unlink()
+    assert own.client.get(url).status_code == 404
+
+
+def test_broken_image_preview_is_an_error(own: Server) -> None:
+    shot_id = own.shots()["sharp.jpg"]["id"]
+    (own.root / EVENT / "sharp.jpg").write_bytes(b"not an image")
+    resp = own.client.get(f"/api/shots/{shot_id}/preview")
+    assert resp.status_code == 500 and "esikatselua ei voi tehdä" in resp.json()["detail"]
+
+
+# --------------------------------------------------------------------------- #
 # Jobs on a library of their own
 # --------------------------------------------------------------------------- #
 @pytest.fixture
@@ -578,7 +643,7 @@ def test_next_analysis_uses_stored_settings(own: Server) -> None:
     assert {s["auto_verdict"] for g in data["groups"] for s in g["shots"] if s["name"] in BURST} == {"keep"}
 
 
-def crash(primary: str, files: list[str]) -> None:
+def crash(*args: Any) -> None:
     os._exit(1)                                                   # like an OOM kill or a segfault in a codec
 
 

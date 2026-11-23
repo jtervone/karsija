@@ -70,6 +70,19 @@ Decisions are stored in the server's database only. They are not written to XMP 
 `scan --move` yet. Send every POST/PATCH with `Content-Type: application/json`, even without a body (e.g.
 `curl -X POST localhost:8765/api/decisions/undo -H 'Content-Type: application/json'`).
 
+Previews: `GET /api/shots/{id}/preview?size=grid` (long edge 400 px, the default) or `size=full` (2560 px) returns
+an upright JPEG, never larger than the original. A RAW+JPEG pair is previewed from the JPEG, a RAW alone from its
+embedded preview. The analysis writes both sizes as it goes; a missing one is made on the first request. They are
+kept in `$XDG_CACHE_HOME/karsija/previews/` (by default `~/.cache/karsija/previews/`), one file per shot and size,
+and are made again when a file of the shot changes. Old previews are not removed; the folder can be deleted at
+any time. A browser may keep a preview for a year without asking again (`Cache-Control: max-age`), then revalidates
+it by its `ETag`.
+
+```sh
+curl -o grid.jpg 'localhost:8765/api/shots/1/preview?size=grid'
+curl -o full.jpg 'localhost:8765/api/shots/1/preview?size=full'
+```
+
 The server binds `127.0.0.1` by default. Any `--host` that is not a loopback address (`localhost`,
 `127.0.0.0/8`, `::1`) prints a warning: the server has no login, so anyone who can reach it can browse the
 library and record decisions. Writes from other web sites are refused, and requests must name the server in their
