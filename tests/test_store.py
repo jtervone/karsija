@@ -197,6 +197,19 @@ def test_upgrade_from_schema_1(tmp_path: Path) -> None:
     assert store.db.execute("SELECT analysed_at FROM events").fetchall() == [(None,)]
 
 
+def test_upgrade_from_schema_1_without_jobs(tmp_path: Path) -> None:
+    """A judged event of a schema-1 database without a jobs table counts as analysed, time unknown."""
+    path = tmp_path / "karsija.sqlite"
+    v1 = without_analysed_at(SCHEMA).replace("'moved', 'missing'", "'moved'")
+    db = sqlite3.connect(path)
+    db.executescript(v1[: v1.index("CREATE TABLE IF NOT EXISTS decisions")] + "PRAGMA user_version = 1;")
+    db.execute("INSERT INTO events (rel_path, year, name) VALUES ('2025/2025-06-01-test', 2025, '2025-06-01-test')")
+    db.execute("INSERT INTO shots (event_id, key, files, sig, auto_verdict) VALUES (1, '/a.jpg', '[]', 's', 'best')")
+    db.commit()
+    db.close()
+    assert Store(path).db.execute("SELECT analysed_at FROM events").fetchall() == [(0,)]
+
+
 def test_upgrade_from_schema_2(tmp_path: Path) -> None:
     path = tmp_path / "karsija.sqlite"
     db = sqlite3.connect(path)
@@ -205,15 +218,23 @@ def test_upgrade_from_schema_2(tmp_path: Path) -> None:
         db.execute("INSERT INTO events (rel_path, year, name) VALUES (?, 2025, ?)", (f"2025/{name}", name))
     db.execute("INSERT INTO shots (event_id, key, files, sig, auto_verdict) VALUES (1, '/a.jpg', '[]', 's', 'best')")
     db.execute("INSERT INTO shots (event_id, key, files, sig) VALUES (2, '/b.jpg', '[]', 's')")
+    db.execute("INSERT INTO events (rel_path, year, name) VALUES ('2025/2025-06-04-no-job', 2025, '2025-06-04-no-job')")
+    db.execute("INSERT INTO shots (event_id, key, files, sig, auto_verdict) VALUES (4, '/c.jpg', '[]', 's', 'keep')")
+    db.execute("INSERT INTO jobs (kind, scope, status, finished) VALUES ('analyse', '1', 'done', 100)")
+    db.execute("INSERT INTO jobs (kind, scope, status, finished) VALUES ('analyse', '1', 'done', 200)")
+    db.execute("INSERT INTO jobs (kind, scope, status, finished) VALUES ('analyse', '1', 'failed', 300)")
+    db.execute("INSERT INTO jobs (kind, scope, status, finished) VALUES ('analyse', '2', 'done', 150)")
     db.commit()
     db.close()
 
     store = Store(path)
     assert store.db.execute("PRAGMA user_version").fetchone() == (SCHEMA_VERSION,)
-    analysed = store.db.execute("SELECT name, analysed_at IS NOT NULL FROM events ORDER BY id").fetchall()
-    assert analysed == [("2025-06-01-judged", 1), ("2025-06-02-not-judged", 0), ("2025-06-03-empty", 0)]
+    analysed = store.db.execute("SELECT name, analysed_at FROM events ORDER BY id").fetchall()
+    # the end of the last finished job that covered the event; 0 when no job tells
+    assert analysed == [("2025-06-01-judged", 200), ("2025-06-02-not-judged", None), ("2025-06-03-empty", None),
+                        ("2025-06-04-no-job", 0)]
     store.close()
-    assert Store(path).db.execute("SELECT COUNT(*) FROM events").fetchone() == (3,)   # reopening does not upgrade again
+    assert Store(path).db.execute("SELECT COUNT(*) FROM events").fetchone() == (4,)   # reopening does not upgrade again
 
 
 def test_mark_analysed(tmp_path: Path) -> None:

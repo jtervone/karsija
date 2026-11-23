@@ -58,15 +58,23 @@ function useJobs() {
     });
   }, []);
 
+  const opened = useRef(0);               // times the event stream has (re)connected
   useEffect(() => followEvents({
     onJob: update,
-    // jobs may have ended while the stream was down: forget them, the stream lists the ones still pending
-    onOpen: () => setState((s) => ({ ...s, active: {}, version: s.version + 1, online: true })),
+    onOpen: () => {
+      // on a reconnect jobs may have ended while the stream was down: forget them, the stream lists the ones still
+      // pending, and reload the data. The first connection needs neither: the views have just loaded theirs.
+      if (opened.current++ > 0) setState((s) => ({ ...s, active: {}, version: s.version + 1 }));
+      setState((s) => ({ ...s, online: true }));
+    },
     onError: () => setState((s) => ({ ...s, online: false })),
   }), [update]);
 
   const start = useCallback(async (scope) => {
-    const { job } = await api('/analyse', { method: 'POST', body: { scope } });
+    const before = opened.current;
+    let { job } = await api('/analyse', { method: 'POST', body: { scope } });
+    // the stream reconnected meanwhile: the job may have ended unseen, ask the server how it is now
+    if (opened.current !== before) job = await api(`/jobs/${job.id}`);
     update(job);
   }, [update]);
 

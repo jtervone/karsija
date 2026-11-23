@@ -30,8 +30,8 @@ code { background: var(--panel-hi); padding: 0 .25em; border-radius: 3px; }
 .crumbs { margin: 0 0 .5rem; }
 
 .offline {
-  position: sticky; top: 0; z-index: 1; padding: .4rem 1.5rem;
-  background: var(--error); color: #fff; text-align: center;
+  position: sticky; top: 0; z-index: 1; padding: .4rem 1.5rem; text-align: center;
+  background: var(--panel-hi); border-bottom: 2px solid var(--similar); color: var(--text);
 }
 
 .top { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; flex-wrap: wrap; }
@@ -44,18 +44,21 @@ button {
 }
 button:hover:not(:disabled) { border-color: var(--muted); }
 button:disabled { opacity: .45; cursor: default; }
-button.primary { background: #1f6f3a; border-color: var(--best); }
-button.primary:hover:not(:disabled) { background: #238042; }
+button.primary { background: #1f6f3a; border-color: var(--best); color: #fff; }
+button.primary:hover:not(:disabled) { background: #1a5f32; }
 
 .year { background: var(--panel); border-radius: 8px; padding: .2rem 1rem .6rem; margin-top: 1rem; }
 .year h2 { margin-top: .6rem; }
 table.events { width: 100%; border-collapse: collapse; }
 .events th { text-align: left; font-weight: 500; color: var(--muted); font-size: .85rem; padding: .3rem .5rem; }
 .events td { padding: .45rem .5rem; border-top: 1px solid var(--line); vertical-align: middle; }
-.events tr:hover td { background: var(--panel-hi); }
 .events .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.events .name { word-break: break-word; }
-.events .action { text-align: right; width: 16rem; }
+.events .name { overflow-wrap: anywhere; }
+.events .when { font-size: .8rem; }
+.events .action { text-align: right; width: 14rem; }
+/* in a row the label goes under a shorter bar, so the column keeps its width when a job starts */
+.events .progress { display: flex; flex-direction: column; align-items: flex-end; gap: .2rem; }
+.events progress { width: 100%; }
 
 .badge {
   display: inline-block; font-size: .8rem; font-weight: 600; padding: .05rem .45rem; border-radius: 4px;
@@ -71,6 +74,15 @@ progress {
 progress::-webkit-progress-bar { background: var(--keep); border-radius: 4px; }
 progress::-webkit-progress-value { background: var(--best); border-radius: 4px; }
 progress::-moz-progress-bar { background: var(--best); border-radius: 4px; }
+/* styled bars lose the browser's own indeterminate animation: a moving stripe instead of an empty bar */
+progress:indeterminate {
+  background: linear-gradient(90deg, var(--keep) 0 40%, var(--best) 50%, var(--keep) 60% 100%) 0 0 / 300% 100%;
+  animation: indeterminate 1.2s linear infinite;
+}
+progress:indeterminate::-webkit-progress-bar { background: transparent; }
+progress:indeterminate::-moz-progress-bar { background: transparent; }
+@keyframes indeterminate { to { background-position: -150% 0; } }
+@media (prefers-reduced-motion: reduce) { progress:indeterminate { animation: none; } }
 
 /* Verdicts, for the review views */
 .verdict-best { color: var(--best); border-color: var(--best); }
@@ -79,7 +91,20 @@ progress::-moz-progress-bar { background: var(--best); border-radius: 4px; }
 .verdict-blurry { color: var(--blurry); border-color: var(--blurry); }
 .verdict-error { color: var(--error); border-color: var(--error); }
 
+/* narrow screens: one card per event, every count with its label */
 @media (max-width: 40rem) {
+  .page { padding: 1rem; }
+  .year { padding: .2rem .6rem .6rem; }
   .events thead { display: none; }
-  .events .action { width: auto; }
+  .events, .events tbody { display: block; }
+  .events tr {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .3rem .5rem;
+    border-top: 1px solid var(--line); padding: .5rem 0;
+  }
+  .events td { border: 0; padding: 0; }
+  .events .name, .events .action, .events .unanalysed-cell { grid-column: 1 / -1; }
+  .events .num { text-align: left; }
+  .events .num::before { content: attr(data-label); display: block; font-size: .75rem; color: var(--muted); }
+  .events .action { width: auto; text-align: left; }
+  .events .progress { align-items: stretch; }
 }

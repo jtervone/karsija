@@ -8,7 +8,8 @@ by the review server (``karsija serve``), every change also goes into
 analyses. The ``scan`` command writes neither. ``settings`` overrides
 ``analysis.DEFAULT_SETTINGS`` for the server; nothing writes it yet.
 
-``events.analysed_at``: when a server analysis that covered the event last finished, NULL if none has.
+``events.analysed_at``: when a server analysis that covered the event last finished, NULL if none has, 0 if one
+has but its time is not known (events judged before schema 3 without a finished job to tell).
 
 ``shots.state``: ``present`` (in its event folder), ``moved`` (moved into the
 reject folder by ``scan --move``) or ``missing`` (gone from the folder when the
@@ -145,13 +146,16 @@ class Store:
         self.db.execute("PRAGMA foreign_keys = ON")
 
     def _upgrade_to_3(self) -> None:
-        """Schema 3 records when an event was analysed. Events with judged shots count as analysed now."""
+        """Schema 3 records when an event was analysed. Events with judged shots count as analysed: at the end of
+        the last finished job that covered them, or at 0 (time unknown) when no job says so."""
         if "analysed_at" not in {r[1] for r in self.db.execute("PRAGMA table_info(events)")}:   # not half-upgraded
             self.db.execute("ALTER TABLE events ADD COLUMN analysed_at REAL")
+        has_jobs = self.db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'jobs'").fetchone()
+        last_job = ("(SELECT MAX(finished) FROM jobs WHERE kind = 'analyse' AND status = 'done' "
+                    "AND scope IN ('all', CAST(events.id AS TEXT)))") if has_jobs else "NULL"
         self.db.execute(
-            "UPDATE events SET analysed_at = ? "
-            "WHERE EXISTS (SELECT 1 FROM shots WHERE event_id = events.id AND auto_verdict IS NOT NULL)",
-            (time.time(),),
+            f"UPDATE events SET analysed_at = COALESCE({last_job}, 0) "
+            "WHERE EXISTS (SELECT 1 FROM shots WHERE event_id = events.id AND auto_verdict IS NOT NULL)"
         )
         self.db.commit()
 

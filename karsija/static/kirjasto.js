@@ -4,9 +4,11 @@ import { fmt, fmtTime, html, useState } from './ui.js';
 
 /** Progress of a queued or running job: a bar and its label. */
 export function JobProgress({ job }) {
+  // the server counts the shots to analyse first; until then (and when every shot comes from the cache) total is 0
   let label;
   if (job.status === 'queued') label = 'Jonossa';
-  else if (!job.total) label = 'Etsitään kuvia…';
+  else if (!job.total) label = 'Analysoidaan…';
+  else if (job.done >= job.total) label = 'Ryhmitellään…';
   else label = `Analysoidaan ${fmt(job.done)} / ${fmt(job.total)}`;
   // no value while the number of shots is not known yet: an indeterminate bar
   const value = job.status === 'running' && job.total ? job.done : undefined;
@@ -16,30 +18,46 @@ export function JobProgress({ job }) {
   </div>`;
 }
 
+/** When the event was analysed; 0 is an analysis of an older version whose time is not known. */
+function analysedText(at) {
+  return at ? `analysoitu ${fmtTime(at)}` : 'analysoitu';
+}
+
 function Counts({ ev }) {
   if (ev.analysed_at == null) {
-    return html`<td colspan="4" class="muted">
+    return html`<td colspan="4" class="muted unanalysed-cell">
       <span class="badge unanalysed">Ei analysoitu</span>
       ${ev.shots > 0 && html` (${fmt(ev.shots)} kuvaa tallessa aiemmasta analyysistä)`}
     </td>`;
   }
   const empty = ev.shots === 0;
+  const num = (label, content) => html`<td class="num" data-label=${label}>${content}</td>`;
   return html`
-    <td class="num" title=${`analysoitu ${fmtTime(ev.analysed_at)}`}>${fmt(ev.shots)}</td>
-    <td class="num">${ev.candidates > 0 ? html`<span class="candidates">${fmt(ev.candidates)}</span>` : '0'}</td>
-    <td class="num">${empty ? '–' : fmt(ev.reviewed)}</td>
-    <td class="num">${empty ? '–' : ev.unreviewed === 0 ? html`<span class="reviewed">valmis</span>` : fmt(ev.unreviewed)}</td>`;
+    ${num('Kuvia', fmt(ev.shots))}
+    ${num('Karsittavia', empty ? '–'
+      : ev.candidates > 0 ? html`<span class="candidates">${fmt(ev.candidates)}</span>` : '0')}
+    ${num('Tarkastettu', empty ? '–' : fmt(ev.reviewed))}
+    ${num('Tarkastamatta', empty ? '–'
+      : ev.unreviewed === 0 ? html`<span class="reviewed">valmis</span>` : fmt(ev.unreviewed))}`;
 }
 
 function EventRow({ ev, job, failed, allBusy, start }) {
-  const busy = job || allBusy;
+  let action;
+  if (job) action = html`<${JobProgress} job=${job} />`;
+  // a disabled button would not say why (and shows no tooltip in every browser)
+  else if (allBusy) action = html`<span class="muted">mukana kirjaston analyysissä</span>`;
+  else {
+    action = html`<button onClick=${() => start(ev.id)}>
+      ${ev.analysed_at == null ? 'Analysoi' : 'Analysoi uudelleen'}</button>`;
+  }
   return html`<tr>
-    <td class="name"><a href=${`#/event/${ev.id}`}>${ev.name}</a></td>
+    <td class="name">
+      <a href=${`#/event/${ev.id}`}>${ev.name}</a>
+      ${ev.analysed_at != null && html`<div class="muted when">${analysedText(ev.analysed_at)}</div>`}
+    </td>
     <${Counts} ev=${ev} />
     <td class="action">
-      ${job ? html`<${JobProgress} job=${job} />`
-            : html`<button disabled=${busy} onClick=${() => start(ev.id)}
-                     title=${allBusy ? 'Koko kirjaston analyysi on käynnissä' : ''}>Analysoi</button>`}
+      ${action}
       ${failed && !job && html`<div class="error">Analyysi epäonnistui: ${failed.error}</div>`}
     </td>
   </tr>`;

@@ -188,7 +188,8 @@ def test_ui_loads_nothing_from_other_origins(server: Server, path: str) -> None:
 def test_ui_files_refer_to_no_other_origin() -> None:
     """The page works offline: no file of the UI names a URL of another site (the policy would block it anyway)."""
     files = [p for p in server_mod.STATIC_DIR.rglob("*") if p.suffix in (".html", ".js", ".css")]
-    assert len(files) >= 8
+    assert {p.relative_to(server_mod.STATIC_DIR).as_posix() for p in files} >= {
+        "index.html", "app.js", "app.css", "vendor/preact.js", "vendor/hooks.js", "vendor/htm.js"}
     for p in files:
         text = p.read_text().replace("http://www.w3.org/", "")    # Preact's SVG and MathML namespace names
         assert not re.search(r"""(?:https?:)?//[a-z0-9.-]+\.[a-z]{2,}/""", text, re.I), p

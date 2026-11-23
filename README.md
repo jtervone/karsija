@@ -41,8 +41,12 @@ karsija serve --help                             # --host, --allow-host, --worke
 
 The page it opens is **Kirjasto**: the event folders by year, with each event's shot count, cull candidates
 (shots judged blurry or similar) and how many shots are reviewed and unreviewed. Events the server has not
-analysed yet are marked *Ei analysoitu*. Analysis does not start on its own: **Analysoi** analyses one event,
-**Analysoi kaikki** the whole library, and a progress bar follows it; the counts update when it finishes. The
+analysed yet are marked *Ei analysoitu*; the others show when they were last analysed. Analysis does not start on
+its own: **Analysoi** analyses one event (**Analysoi uudelleen** once it has been analysed; unchanged shots come
+from the cache, so a second run mostly regroups), **Analysoi kaikki** the whole library, and a progress bar follows
+it; the counts update when it finishes. If an analysis fails, its error stays on the event's row (or under
+**Analysoi kaikki**) until it is started again; the page forgets it on reload. While the server cannot be reached,
+a banner says so, and the page reconnects and reloads the counts by itself. The
 event, loupe and compare views (`#/event/<id>`, `#/event/<id>/loupe/<shot>`, `#/event/<id>/compare/<group>`) come
 later.
 
@@ -118,7 +122,9 @@ library and record decisions. Writes from other web sites are refused, and reque
 The server never writes into the library. By default its state database lives at
 `~/.local/share/karsija/<hash>.sqlite` (`$XDG_DATA_HOME/karsija/` when that is set). `<hash>` is the first 16 hex digits of the
 SHA-256 of the resolved library root, so every library gets its own database. Use `--db` to choose another file.
-This database is separate from the `scan` command's `karsija.sqlite`. Previews go to `~/.cache/karsija/previews/`
+This database is separate from the `scan` command's `karsija.sqlite`. Upgrading karsija upgrades it too (now
+schema 3), after which an older karsija can no longer open it. Events analysed before schema 3 count as analysed,
+at the end of the last finished analysis job that covered them (with no time shown when there is none). Previews go to `~/.cache/karsija/previews/`
 (see above; `--previews` chooses another folder). Only image files inside the library root (and previews made from
 them) are served; `..`, absolute paths and symlinks that lead outside it are rejected. Shots whose files have
 disappeared are left out of the event; if they come back, their decisions are still there.
@@ -137,7 +143,7 @@ Everything goes into the `--report` folder (default `./karsintaraportti`):
   when one of its files changes (path, size or modification time). It also stores the EXIF
   capture data of every shot (time, exposure, aperture, ISO, focal length, camera, lens).
   Shots cached by an older version get their EXIF read on the next run without being analysed again.
-  The first run with this version upgrades the database (schema 2); older versions of karsija can
+  The first run with this version upgrades the database (schema 3); older versions of karsija can
   no longer open it after that.
 
 The first run after upgrading imports the analyses from the old script's `cache.sqlite`;
