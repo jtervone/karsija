@@ -12,6 +12,7 @@ import os
 import re
 import socket
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +22,7 @@ import cv2
 from karsija.actions import REJECT_DIR, move_rejects, write_xmp
 from karsija.analysis import Shot, analyse_file, group_shots, judge
 from karsija.library import JPEG_EXT, collect_shots, find_event_dirs, load_image
+from karsija.previews import default_cache_dir
 from karsija.store import Store, default_db_path
 
 
@@ -137,7 +139,8 @@ SCAN_EPILOG = ("Mitään ei poisteta. --write-xmp kirjoittaa XMP-sivutiedoston v
 
 
 SERVE_EPILOG = ("Palvelin ei kirjoita kirjastoon mitään: päätökset ja analyysit tallentuvat tietokantaan, "
-                "oletuksena kirjaston ulkopuolelle (ks. --db).")
+                "oletuksena kirjaston ulkopuolelle (ks. --db), ja esikatselukuvat välimuistiin (ks. --previews; "
+                "tavallisesti 0,5–1 Mt kuvaa kohden, kansion voi poistaa milloin vain).")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -175,6 +178,9 @@ def build_parser() -> argparse.ArgumentParser:
     sv.add_argument("--db", type=Path, default=None,
                     help="tietokanta (oletus: $XDG_DATA_HOME/karsija/<juuren tiiviste>.sqlite, "
                          "ilman muuttujaa ~/.local/share/karsija/...)")
+    sv.add_argument("--previews", type=Path, default=None, metavar="KANSIO",
+                    help="esikatselukuvien välimuisti (oletus: $XDG_CACHE_HOME/karsija/previews, "
+                         "ilman muuttujaa ~/.cache/karsija/previews)")
     sv.add_argument("--allow-host", action="append", default=[], metavar="NIMI",
                     help="hyväksy myös tämä palvelimen nimi selaimen osoitteessa (esim. kone.local); "
                          "voi antaa useasti")
@@ -298,6 +304,17 @@ def bind_error(host: str, port: int) -> str:
     return ""
 
 
+def cache_error(folder: Path) -> str:
+    """Why files cannot be written into ``folder`` (created if missing), or ``""``."""
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryFile(dir=folder):
+            pass
+    except OSError as e:
+        return e.strerror or str(e)
+    return ""
+
+
 def serve(args: argparse.Namespace) -> int:
     import threading
     import webbrowser
@@ -314,6 +331,13 @@ def serve(args: argparse.Namespace) -> int:
         print("VAROITUS: kansiossa ei ole YYYY/YYYY-MM-DD* -kansioita; anna kirjaston juuri.", file=sys.stderr)
     db_path = (args.db.expanduser() if args.db else default_db_path(root)).resolve()
     db_path.parent.mkdir(parents=True, exist_ok=True)
+    preview_dir = (args.previews.expanduser() if args.previews else default_cache_dir()).resolve()
+    if preview_dir.is_relative_to(root):
+        print(f"VAROITUS: esikatselukansio {preview_dir} on kirjaston sisällä; palvelin kirjoittaa sinne.",
+              file=sys.stderr)
+    if error := cache_error(preview_dir):
+        print(f"VAROITUS: esikatselukansioon {preview_dir} ei voi kirjoittaa ({error}); esikatseluja ei voi "
+              "tehdä. Valitse toinen kansio valitsimella --previews.", file=sys.stderr)
     if not is_loopback(args.host):
         print(f"VAROITUS: palvelin kuuntelee osoitteessa {args.host}. Kuka tahansa verkossa voi selata kirjastoa "
               "ja tehdä päätöksiä; palvelimessa ei ole kirjautumista. Käytä vain luotetussa verkossa.",
@@ -324,7 +348,7 @@ def serve(args: argparse.Namespace) -> int:
     host = f"[{args.host}]" if ":" in args.host else args.host
     any_address = args.host in ("0.0.0.0", "::")
     url = f"http://{'127.0.0.1' if any_address else host}:{args.port}/"
-    print(f"Kirjasto:     {root}\nTietokanta:   {db_path}\nOsoite:       {url}"
+    print(f"Kirjasto:     {root}\nTietokanta:   {db_path}\nEsikatselut:  {preview_dir}\nOsoite:       {url}"
           + ("  (kuuntelee kaikissa verkko-osoitteissa)" if any_address else ""), flush=True)
 
     def ready() -> None:
@@ -335,7 +359,8 @@ def serve(args: argparse.Namespace) -> int:
     allowed_hosts = [*LOOPBACK_HOSTS, *(own_host_names() if any_address else [host]),
                      *(bracket(h) for h in args.allow_host)]
     app = create_app(root, db_path, workers=max(1, args.workers), on_ready=ready,
-                     allowed_hosts=list(dict.fromkeys(h.lower() for h in allowed_hosts)), docs=args.docs)
+                     allowed_hosts=list(dict.fromkeys(h.lower() for h in allowed_hosts)), docs=args.docs,
+                     preview_dir=preview_dir)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0
 

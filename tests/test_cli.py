@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from karsija import cli as cli_mod
 from karsija.cli import bind_error, main
+from karsija.previews import default_cache_dir
 from karsija.store import default_db_path
 
 
@@ -131,6 +132,30 @@ def test_serve_defaults(library: Library, tmp_path: Path, monkeypatch: pytest.Mo
     out, err = capsys.readouterr()
     assert "http://127.0.0.1:8765/" in out and err == ""
     assert not any(library.root.rglob("*.sqlite"))           # nothing is written into the library
+
+
+def test_serve_preview_dir(library: Library, tmp_path: Path, fake_uvicorn: list[dict[str, Any]],
+                           capsys: pytest.CaptureFixture[str]) -> None:
+    db = str(tmp_path / "k.sqlite")
+    assert main(["serve", str(library.root), "--no-browser", "--db", db, "--previews", str(tmp_path / "p")]) == 0
+    assert fake_uvicorn[0]["app"].state.previews.cache_dir == tmp_path / "p"
+    assert f"Esikatselut:  {tmp_path / 'p'}" in capsys.readouterr().out
+    assert main(["serve", str(library.root), "--no-browser", "--db", db]) == 0
+    assert fake_uvicorn[1]["app"].state.previews.cache_dir == default_cache_dir()
+
+
+def test_serve_warns_about_the_preview_dir(library: Library, tmp_path: Path, fake_uvicorn: list[dict[str, Any]],
+                                          capsys: pytest.CaptureFixture[str]) -> None:
+    db = str(tmp_path / "k.sqlite")
+    (tmp_path / "file").write_bytes(b"")
+    assert main(["serve", str(library.root), "--no-browser", "--db", db, "--previews", str(tmp_path / "file")]) == 0
+    assert "VAROITUS: esikatselukansioon" in capsys.readouterr().err
+    inside = library.root / ".previews"
+    try:
+        assert main(["serve", str(library.root), "--no-browser", "--db", db, "--previews", str(inside)]) == 0
+        assert "on kirjaston sisällä" in capsys.readouterr().err
+    finally:
+        inside.rmdir()
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.10", "::", "example.local"])

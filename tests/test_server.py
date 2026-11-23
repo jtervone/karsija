@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import os
 import shutil
 import sqlite3
@@ -15,9 +16,12 @@ import pytest
 from conftest import BURST, EVENT, EXIF_META, EXPECTED, T0, Library, save_jpeg, texture
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from PIL import Image
 
+from karsija import previews
 from karsija import server as server_mod
-from karsija.server import LOOPBACK_HOSTS, Broker, JobRunner, create_app, host_name
+from karsija.library import RawpyMissing
+from karsija.server import LOOPBACK_HOSTS, Broker, JobRunner, create_app, etag_matches, host_name
 from karsija.store import Store
 
 SECRET = b"secret outside the library"
@@ -520,6 +524,113 @@ def test_failed_commit_is_an_error(own: Server, monkeypatch: pytest.MonkeyPatch)
 
 
 # --------------------------------------------------------------------------- #
+# Previews
+# --------------------------------------------------------------------------- #
+def test_analysis_writes_previews(server: Server) -> None:
+    cache: previews.PreviewCache = server.app.state.previews
+    for name in ("sharp.jpg", "DSC_0100.NEF"):
+        files = [str(server.root.resolve() / f) for f in server.shots()[name]["files"]]
+        sig = Store.signature(files)
+        assert all(previews.preview_path(cache.cache_dir, sig, size).is_file() for size in previews.SIZES), name
+
+
+@pytest.mark.parametrize(("size", "dims"), [("grid", (400, 300)), ("full", (800, 600))])   # never scaled up
+def test_preview_sizes(server: Server, size: str, dims: tuple[int, int]) -> None:
+    url = server.shots()["sharp.jpg"]["preview"][size]
+    resp = server.client.get(url)
+    assert resp.status_code == 200 and resp.headers["content-type"] == "image/jpeg"
+    assert Image.open(io.BytesIO(resp.content)).size == dims
+    assert resp.headers["etag"].endswith(f'-{size}"')
+    assert resp.headers["cache-control"] == f"private, max-age={server_mod.PREVIEW_MAX_AGE}, immutable"
+    assert resp.headers["cross-origin-resource-policy"] == "same-origin"
+    assert resp.headers["x-content-type-options"] == "nosniff"
+    etag = resp.headers["etag"]
+    for inm in (etag, f"W/{etag}", f'"other", {etag}', "*"):
+        again = server.client.get(url, headers={"If-None-Match": inm})
+        assert again.status_code == 304 and again.headers["etag"] == etag and not again.content, inm
+    assert server.client.get(url, headers={"If-None-Match": '"other"'}).status_code == 200
+
+
+def test_preview_urls_are_versioned(server: Server) -> None:
+    shot = server.shots()["sharp.jpg"]
+    detail = server.client.get(f"/api/shots/{shot['id']}").json()
+    assert detail["preview"] == shot["preview"] and "sig" not in shot
+    assert set(shot["preview"]) == {"grid", "full"}
+    grid = shot["preview"]["grid"]
+    assert grid.startswith(f"/api/shots/{shot['id']}/preview?size=grid&v=")
+    # without the version (or with another one) the browser must ask again every time
+    for url in (f"/api/shots/{shot['id']}/preview", grid.replace("&v=", "&v=0")):
+        resp = server.client.get(url)
+        assert resp.status_code == 200 and resp.headers["cache-control"] == "private, no-cache"
+        assert resp.headers["etag"] == server.client.get(grid).headers["etag"]
+
+
+def test_preview_default_size_and_errors(server: Server) -> None:
+    shot_id = server.shots()["sharp.jpg"]["id"]
+    resp = server.client.get(f"/api/shots/{shot_id}/preview")
+    assert Image.open(io.BytesIO(resp.content)).size == (400, 300)
+    assert server.client.get(f"/api/shots/{shot_id}/preview", params={"size": "huge"}).status_code == 422
+    assert server.client.get("/api/shots/99999/preview").status_code == 404
+
+
+def test_preview_is_cached_until_the_file_changes(own: Server, monkeypatch: pytest.MonkeyPatch) -> None:
+    made: list[str] = []
+    make = previews.make
+    monkeypatch.setattr(previews, "make", lambda *a: made.append(a[-1]) or make(*a))
+    shot_id = own.shots()["sharp.jpg"]["id"]
+    url = f"/api/shots/{shot_id}/preview"
+    first = own.client.get(url)
+    assert own.client.get(url).content == first.content
+    assert made == []                                             # made by the analysis already
+
+    src = own.root / EVENT / "sharp.jpg"
+    save_jpeg(src, texture(8), T0)                                # another picture
+    st = src.stat()
+    os.utime(src, (st.st_atime, st.st_mtime + 10))
+    changed = own.client.get(url, headers={"If-None-Match": first.headers["etag"]})
+    assert changed.status_code == 200 and changed.headers["etag"] != first.headers["etag"]
+    old_url = own.shots()["sharp.jpg"]["preview"]["grid"]        # not analysed again: the old version
+    assert own.client.get(old_url).headers["cache-control"] == "private, no-cache"
+    assert changed.content != first.content and made == ["grid"]
+    assert own.client.get(url).content == changed.content and made == ["grid"]
+
+    src.unlink()
+    assert own.client.get(url).status_code == 404
+
+
+def test_broken_image_preview_is_an_error(own: Server) -> None:
+    shot_id = own.shots()["sharp.jpg"]["id"]
+    (own.root / EVENT / "sharp.jpg").write_bytes(b"not an image")
+    resp = own.client.get(f"/api/shots/{shot_id}/preview")
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "kuvaa ei voi lukea: tiedosto on rikki tai sen muotoa ei tueta"
+
+
+@pytest.mark.parametrize(("error", "status", "detail"), [
+    (RawpyMissing("rawpy not installed, cannot read RAW"), 500, "RAW-kuvan esikatselu vaatii rawpy-paketin"),
+    (previews.NoAccess("[Errno 13] Permission denied"), 500, "kuvaa ei voi lukea: ei lukuoikeutta tiedostoon"),
+    (PermissionError(13, "Permission denied"), 500, "esikatselua ei voi tallentaa välimuistiin: Permission denied"),
+])
+def test_preview_errors(own: Server, monkeypatch: pytest.MonkeyPatch, error: Exception, status: int,
+                        detail: str) -> None:
+    def fail(*args: Any) -> None:
+        raise error
+
+    monkeypatch.setattr(previews, "make", fail)
+    shot_id = own.shots()["sharp.jpg"]["id"]
+    src = own.root / EVENT / "sharp.jpg"
+    os.utime(src, (src.stat().st_atime, src.stat().st_mtime + 10))   # not in the cache any more
+    resp = own.client.get(f"/api/shots/{shot_id}/preview")
+    assert (resp.status_code, resp.json()["detail"]) == (status, detail)
+
+
+def test_etag_matches() -> None:
+    assert etag_matches('"a-grid"', '"a-grid"') and etag_matches('W/"a-grid"', '"a-grid"')
+    assert etag_matches('"b", "a-grid"', '"a-grid"') and etag_matches("*", '"a-grid"')
+    assert not etag_matches("", '"a-grid"') and not etag_matches('"a-full"', '"a-grid"')
+
+
+# --------------------------------------------------------------------------- #
 # Jobs on a library of their own
 # --------------------------------------------------------------------------- #
 @pytest.fixture
@@ -578,7 +689,7 @@ def test_next_analysis_uses_stored_settings(own: Server) -> None:
     assert {s["auto_verdict"] for g in data["groups"] for s in g["shots"] if s["name"] in BURST} == {"keep"}
 
 
-def crash(primary: str, files: list[str]) -> None:
+def crash(*args: Any) -> None:
     os._exit(1)                                                   # like an OOM kill or a segfault in a codec
 
 

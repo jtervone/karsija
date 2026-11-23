@@ -26,9 +26,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from karsija.analysis import DEFAULT_SETTINGS, Shot
-from karsija.library import EVENT_DIR_RE, read_exif
+from karsija.library import EVENT_DIR_RE, JPEG_EXT, read_exif
 
 CACHE_VERSION = 4
+RAW_CACHE_VERSION = 5         # shots without a JPEG: 5 = analysed upright, turned by the RAW's own orientation
 SCHEMA_VERSION = 2
 
 SCHEMA = """
@@ -139,12 +140,17 @@ class Store:
 
     @staticmethod
     def signature(files: list[str]) -> str:
-        """Cache key: path + size + mtime of every file of the shot."""
+        """Cache key: path + size + mtime of every file of the shot.
+
+        A shot without a JPEG has its own version: its analyses (and previews) changed when RAW orientation was
+        applied, while JPEG and RAW+JPEG shots, including those imported from the old cache, stay valid.
+        """
         parts = []
         for f in files:
             st = os.stat(f)
             parts.append(f"{f}:{st.st_size}:{int(st.st_mtime)}")
-        return f"v{CACHE_VERSION}|" + "|".join(sorted(parts))
+        version = CACHE_VERSION if any(Path(f).suffix.lower() in JPEG_EXT for f in files) else RAW_CACHE_VERSION
+        return f"v{version}|" + "|".join(sorted(parts))
 
     def event_id(self, rel_path: str) -> int:
         """Return the id of an event folder (``YYYY/YYYY-MM-DD...`` relative to the root), creating it if needed."""
