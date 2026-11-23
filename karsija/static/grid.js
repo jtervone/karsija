@@ -3,7 +3,7 @@ import { Component, html } from './ui.js';
 import { SUGGESTION } from './review.js';
 
 export const VERDICTS = { best: 'paras', keep: 'hyvä', similar: 'samankaltainen', blurry: 'epäterävä', error: 'virhe' };
-const DECISIONS = { keep: 'pidä', reject: 'hylkää' };
+export const DECISIONS = { keep: 'pidä', reject: 'hylkää' };
 
 export function stars(rating) {
   return rating === 0 ? '☆' : '★'.repeat(rating);

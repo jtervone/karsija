@@ -1,8 +1,9 @@
-// Event views: the Tapahtuma grid, and the frame of the loupe and compare views, which share its keys and decisions.
+// Event views: the Tapahtuma grid, the loupe and the frame of the compare view, which share its keys and decisions.
 import { Grid, groupBest } from './grid.js';
 import { ShortcutHelp, useKeys } from './keys.js';
+import { Loupe } from './loupe.js';
 import { CANDIDATE, Order, filterGroups, useReview } from './review.js';
-import { fmt, html, useCallback, useEffect, useMemo, useRef, useState } from './ui.js';
+import { fmt, html, preload, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from './ui.js';
 
 const TITLES = { event: 'Tapahtuma', loupe: 'Kuva', compare: 'Vertailu' };
 const FILTERS = [
@@ -17,14 +18,6 @@ function blurFilter() {
   setTimeout(() => { if (document.activeElement?.closest('.filters')) document.activeElement.blur(); }, 0);
 }
 
-const preloaded = new Set();
-function preload(url) {
-  if (preloaded.has(url)) return;
-  if (preloaded.size > 5000) preloaded.clear();
-  preloaded.add(url);
-  new Image().src = url;
-}
-
 /** Load the grid previews around `current` and the first ones of the next group, also while an arrow key is held. */
 function usePreload(order, shots, current) {
   useEffect(() => {
@@ -35,6 +28,16 @@ function usePreload(order, shots, current) {
     if (next != null) ids.push(...order.group(next).ids.slice(0, 8));
     for (const id of ids) preload(shots.get(id).preview.grid);
   }, [order, current]);     // not on decisions: they do not change the previews
+}
+
+/** Where `id` is: `Kuva 12 / 340 · ryhmässä 2 / 5`, among the shown shots. */
+export function position(order, id) {
+  const group = order.group(id);
+  const text = `Kuva ${fmt(order.index.get(id) + 1)} / ${fmt(order.ids.length)}`;
+  if (!group || group.members.length < 2) return text;
+  const hidden = group.members.length - group.ids.length;
+  const where = `ryhmässä ${group.ids.indexOf(id) + 1} / ${group.ids.length}`;
+  return `${text} · ${where}${hidden > 0 ? ` (${hidden} piilossa)` : ''}`;
 }
 
 function Counts({ ev, shots }) {
@@ -131,7 +134,24 @@ export function EventView({ route, version }) {
     return () => clearTimeout(timer);
   }, [review.notice, review.notify]);
 
+  // Back in the grid (Esc, Back): where it was left, moved only as far as the current shot needs. The listener goes
+  // before the view changes (a layout effect), so the shorter page of the loupe does not overwrite the place.
+  const gridScroll = useRef(null);
+  const loaded = data != null;
+  useLayoutEffect(() => {
+    if (route.view !== 'event' || !loaded) return undefined;
+    if (gridScroll.current?.event === eventId) {
+      scrollTo(0, gridScroll.current.y);
+      document.querySelector('.card.current')?.scrollIntoView({ block: 'nearest' });
+    }
+    gridScroll.current = { event: eventId, y: scrollY };
+    const onScroll = () => { gridScroll.current = { event: eventId, y: scrollY }; };
+    addEventListener('scroll', onScroll, { passive: true });
+    return () => removeEventListener('scroll', onScroll);
+  }, [route.view, eventId, loaded]);
+
   const open = useCallback((id) => { location.hash = `${grid}/loupe/${id}`; }, [grid]);
+  const loupeKeys = useRef(null);
 
   useKeys((action) => {
     if (help) {
@@ -150,7 +170,8 @@ export function EventView({ route, version }) {
       } else return false;
       return true;
     }
-    if (current == null || action.type === 'zoom') return false;     // zoom: the loupe and compare views, later
+    if (action.type === 'zoom') return route.view === 'loupe' && loupeKeys.current ? loupeKeys.current(action) : false;
+    if (current == null) return false;
     if (action.type === 'open' && route.view !== 'event') return false;
     if (cursor == null) setCursor(current);      // the first unreviewed shot, until then only derived
     switch (action.type) {
@@ -188,7 +209,7 @@ export function EventView({ route, version }) {
 
   const ev = data?.event;
   const toggle = (key) => setFilters((f) => ({ ...f, [key]: !f[key] }));
-  return html`<main class=${`page${route.view === 'event' ? ' wide' : ''}`}>
+  return html`<main class=${`page${route.view === 'compare' ? '' : ' wide'}${route.view === 'loupe' ? ' loupe-page' : ''}`}>
     <p class="crumbs">
       <a href="#/">← Kirjasto</a>
       ${route.view !== 'event' && ev && html` · <a href=${grid}>${ev.name}</a>`}
@@ -219,13 +240,17 @@ export function EventView({ route, version }) {
         ? html`<p class="muted">Yksikään kuva ei täytä valittuja ehtoja.</p>`
         : html`<${Grid} groups=${shown} shots=${shots} best=${best} cursor=${current} onPick=${setCursor}
             onOpen=${open} />`)}
-    ${data && route.view !== 'event' && html`<p class="muted">
-      ${TITLES[route.view]}näkymä tulee myöhemmin. Siihen asti tässä näkyy nykyinen
-      ${route.view === 'loupe' ? 'kuva' : 'ryhmä'} päätöksineen; pikanäppäimet toimivat zoomausta (Z) lukuun
-      ottamatta, ja Esc palaa ruudukkoon.</p>
-      ${current != null && html`<${Grid} groups=${route.view === 'loupe'
-        ? [{ key: currentGroup.key, members: [current], ids: [current] }] : [currentGroup]}
-        shots=${shots} best=${best} cursor=${current} onPick=${setCursor} onOpen=${open} />`}`}
+    ${data && route.view === 'loupe' && (current == null
+      ? html`<p class="muted">Ei näytettävää kuvaa. <a href=${grid}>Takaisin ruudukkoon</a></p>`
+      : html`<${Loupe} shot=${shots.get(current)} best=${best.get(currentGroup.key)} keys=${loupeKeys}
+          position=${position(order, current)}
+          neighbours=${[order.step(current, -1), order.step(current, 1)].filter((id) => id !== current)
+            .map((id) => shots.get(id))} />`)}
+    ${data && route.view === 'compare' && html`<p class="muted">
+      Vertailunäkymä tulee myöhemmin. Siihen asti tässä näkyy nykyinen ryhmä päätöksineen; pikanäppäimet toimivat
+      zoomausta (Z) lukuun ottamatta, ja Esc palaa ruudukkoon.</p>
+      ${current != null && html`<${Grid} groups=${[currentGroup]} shots=${shots} best=${best} cursor=${current}
+        onPick=${setCursor} onOpen=${open} />`}`}
     ${help && html`<${ShortcutHelp} onClose=${() => setHelp(false)} />`}
   </main>`;
 }

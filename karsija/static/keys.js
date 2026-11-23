@@ -13,7 +13,7 @@ export const SHORTCUTS = [
     + 'ja siirry seuraavaan ryhmään'],
   ['Enter', 'avaa kuva'],
   ['C', 'vertaile ryhmän kuvia'],
-  ['Z', '100 % / sovita (kuva- ja vertailunäkymässä, kun ne valmistuvat)'],
+  ['Z', 'kuvanäkymässä 100 % hiiren kohdalta (tai keskeltä) / sovita; myös klikkaus, 100 %:ssa vedä siirtääksesi'],
   ['Esc', 'takaisin ruudukkoon; ruudukossa sulkee ilmoituksen'],
   ['Ctrl+Z', 'kumoa viimeisin tallennettu päätös (myös toisessa tapahtumassa tai aiemmin tehty)'],
   ['?', 'näytä tai piilota pikanäppäimet'],
