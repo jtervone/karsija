@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+
+      # tests/test_ui_js.py skips without Node, so install it to make sure the UI logic is tested
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Install
+        run: |
+          uv sync --locked
+          uv run python -V
+
+      - name: Lint
+        run: |
+          uv run ruff check
+          uv run ruff format --check
+
+      - name: Typecheck
+        run: uv run mypy karsija
+
+      - name: Tests
+        run: uv run pytest
+
+      - name: JS syntax
+        run: for f in karsija/static/*.js karsija/static/vendor/*.js; do node --check "$f"; done
+
+      - name: Build
+        run: uv build
+
+      - name: Wheel includes the static files
+        shell: uv run python {0}
+        run: |
+          import glob
+          import sys
+          import zipfile
+
+          names = zipfile.ZipFile(glob.glob("dist/*.whl")[0]).namelist()
+          static = sorted(n for n in names if n.startswith("karsija/static/"))
+          print("\n".join(static))
+          required = ["index.html", "app.js", "app.css", "vendor/preact.js"]
+          missing = [r for r in required if f"karsija/static/{r}" not in names]
+          if missing:
+              sys.exit(f"missing from the wheel: {missing}")
