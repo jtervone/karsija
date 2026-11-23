@@ -6,16 +6,25 @@ inside each event folder, picks the best of each group and writes an HTML review
 
 **Nothing is ever deleted.** Optional actions:
 
-- `--write-xmp` writes rating and label (`xmp:Rating`, `xmp:Label`) to the XMP sidecars: every existing
-  `name.xmp` (digiKam, Lightroom) and `name.ext.xmp` (darktable, also for the JPEG of a RAW+JPEG pair) is
-  updated in place, keeping all its other data (edit history, tags, face regions); `name.xmp` is created when
-  there is none. best = 5 / Green, keep = 3, similar = 1 / Yellow, blurry = -1 / Red. **A rating or colour
-  label already set in darktable, digiKam or Lightroom is overwritten.** For keep, an existing label is removed
-  only if it is one karsija writes (Green, Yellow, Red); other labels stay. A sidecar that already has the values
-  is not rewritten. If a sidecar is not valid XMP, none of that photo's sidecars is changed and the photo is
-  reported; if a sidecar cannot be written, the photo's sidecars already written are put back. The other data
-  survives, but the file is re-serialised, so its layout (line breaks between attributes, where namespaces are
-  declared) can change.
+- `--write-xmp` writes the verdict to the XMP sidecars as `xmp:Rating` and `xmp:Label`: best = 5 / Green,
+  keep = 3, similar = 1 / Yellow, blurry = -1 / Red. Shots that could not be analysed are left alone.
+  - Every existing `name.xmp` (digiKam, Lightroom) and `name.ext.xmp` (darktable, also for the JPEG of a RAW+JPEG
+    pair) is updated in place, keeping all its other data (edit history, tags, face regions). `name.xmp` is
+    created only when the photo has no sidecar of either kind.
+  - A photo whose sidecar already holds a rating or label of the user's own (anything karsija does not write
+    itself: e.g. 4 stars or Purple) is left alone and counted as such; `--xmp-overwrite` replaces those too.
+    For keep, an existing label is removed only if it is one karsija writes (Green, Yellow, Red).
+  - Only those two fields are written. Lightroom and Bridge show both; darktable and digiKam read the stars
+    from `xmp:Rating`, but keep their colour labels elsewhere (`darktable:colorlabels`, `digiKam:ColorLabel`),
+    so karsija's label does not show there. darktable reads sidecars only for new images unless "look for
+    updated XMP files on startup" is enabled (or the sidecar is reloaded by hand); otherwise it later
+    overwrites karsija's rating from its own database.
+  - A sidecar that already has the values is not rewritten. If a sidecar is not valid XMP, cannot be read or
+    is read-only, none of that photo's sidecars is changed. If a write fails, the photo's sidecars already
+    written are put back where possible; the error names any that could not be. Either way the photo is
+    reported and `scan` exits with status 1.
+  - The other data survives, but the file is re-serialised, so its layout can change (e.g. line breaks
+    between attributes, where namespaces are declared, quote style).
 - `--move blurry,similar` moves rejects into the event folder's `_karsitut/` subfolder, together
   with their RAW/JPEG pair and XMP sidecars. Move them back to undo.
 

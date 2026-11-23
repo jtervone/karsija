@@ -19,7 +19,7 @@ from pathlib import Path
 
 import cv2
 
-from karsija.actions import REJECT_DIR, XmpError, move_rejects, xmp_set, xmp_values
+from karsija.actions import REJECT_DIR, UserValuesKept, XmpError, XmpWriteError, move_rejects, xmp_set, xmp_values
 from karsija.analysis import Shot, analyse_file, group_shots, judge
 from karsija.library import JPEG_EXT, collect_shots, find_event_dirs, load_image
 from karsija.previews import default_cache_dir
@@ -135,9 +135,12 @@ def write_csv(report_dir: Path, results: dict[Path, list[Shot]]) -> Path:
 # --------------------------------------------------------------------------- #
 SHUTDOWN_GRACE = 2          # seconds the server waits for open requests when stopped
 MOVE_KINDS = {"blurry", "similar"}
-SCAN_EPILOG = ("Mitään ei poisteta. --write-xmp korvaa olemassa olevien XMP-sivutiedostojen arvion ja "
-               "väritunnisteen (xmp:Rating, xmp:Label) karsijan tuomiolla, muut tiedot säilyvät; Pidä-tuomio poistaa "
-               "vain karsijan omat väritunnisteet (Green, Yellow, Red). Jos sivutiedostoa ei ole, luodaan nimi.xmp. "
+SCAN_EPILOG = ("Mitään ei poisteta. --write-xmp kirjoittaa tuomion XMP-sivutiedostoihin arvioksi ja väritunnisteeksi "
+               "(xmp:Rating, xmp:Label): Paras 5 / Green, Pidä 3, Samankaltainen 1 / Yellow, Epäterävä -1 / Red; "
+               "analysoimatta jääneisiin ei kosketa. Olemassa olevissa sivutiedostoissa muut tiedot säilyvät. Kuva, jonka "
+               "sivutiedostossa on oma arvio tai väritunniste (muu kuin karsijan kirjoittama), jätetään ennalleen; "
+               "--xmp-overwrite korvaa nekin. Pidä-tuomio poistaa vain karsijan omat väritunnisteet. nimi.xmp luodaan "
+               "vain, jos kuvalla ei ole yhtään sivutiedostoa. "
                f"--move siirtää karsitut tapahtumakansion {REJECT_DIR}-alikansioon, josta ne voi siirtää takaisin.")
 
 
@@ -166,7 +169,10 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--rel-blur", type=float, default=0.25, help="alle tämä osuus kansion mediaanista = epäterävä")
     sc.add_argument("--sim-keep", type=float, default=0.0,
                     help="pidä ryhmän jäsen myös, jos terävyys ≥ tämä × paras (esim. 0.95). Oletus: vain paras pidetään")
-    sc.add_argument("--write-xmp", action="store_true", help="kirjoita arvio XMP-sivutiedostoihin (korvaa aiemman arvion ja väritunnisteen)")
+    sc.add_argument("--write-xmp", action="store_true",
+                    help="kirjoita arvio XMP-sivutiedostoihin (omat arviot ja väritunnisteet säilyvät; ks. alla)")
+    sc.add_argument("--xmp-overwrite", action="store_true",
+                    help="--write-xmp korvaa myös omat arviot ja väritunnisteet")
     sc.add_argument("--move", default="", help="siirrä _karsitut-alikansioon: blurry,similar")
     sc.set_defaults(func=scan)
 
@@ -203,23 +209,33 @@ def main(argv: list[str] | None = None) -> int:
     return int(args.func(args))
 
 
-def write_xmp(shot: Shot) -> str:
+def write_xmp(shot: Shot, overwrite: bool = False) -> str:
     """Rating and label of a scanned shot into its sidecars.
 
-    ``created`` (a new sidecar), ``updated``, ``unchanged`` (the values were there already),
-    ``skip`` (nothing to write) or ``error``.
+    ``created`` (a new sidecar), ``updated``, ``unchanged`` (the values were there already), ``user``
+    (a rating or label of the user's own kept, unless ``overwrite``), ``skip`` (nothing to write) or ``error``.
     """
     values = xmp_values(shot.verdict)
     if values is None:
         return "skip"
     try:
-        old = xmp_set(shot.key, *values, files=shot.files)
+        old = xmp_set(shot.key, *values, files=shot.files, keep_user_values=not overwrite)
+    except UserValuesKept:
+        return "user"
     except XmpError as e:
         print(f"XMP-sivutiedosto ei kelpaa, kuvan sivutiedostoihin ei koskettu: {e}. "
               "Korjaa tai siirrä sivutiedosto pois ja aja uudelleen.", file=sys.stderr)
         return "error"
+    except XmpWriteError as e:
+        msg = f"XMP-kirjoitus epäonnistui: {e}"
+        if e.restored:
+            msg += f". Jo kirjoitetut palautettiin: {', '.join(map(str, e.restored))}"
+        if e.unrestored:
+            msg += f". PALAUTUS EPÄONNISTUI, näissä on karsijan arvio: {', '.join(map(str, e.unrestored))}"
+        print(msg, file=sys.stderr)
+        return "error"
     except OSError as e:
-        print(f"XMP-kirjoitus epäonnistui, kuvan sivutiedostot palautettiin ennalleen: {e}", file=sys.stderr)
+        print(f"XMP-sivutiedostoon ei voi kirjoittaa, kuvan sivutiedostoihin ei koskettu: {e}", file=sys.stderr)
         return "error"
     if not old:
         return "unchanged"
@@ -234,6 +250,9 @@ def scan(args: argparse.Namespace) -> int:
     move_kinds = {k.strip() for k in args.move.split(",") if k.strip()}
     if move_kinds - MOVE_KINDS:
         print("--move hyväksyy vain arvot blurry,similar", file=sys.stderr)
+        return 1
+    if args.xmp_overwrite and not args.write_xmp:
+        print("--xmp-overwrite toimii vain yhdessä --write-xmp:n kanssa", file=sys.stderr)
         return 1
     events = [e for e in find_event_dirs(root) if args.only in str(e.relative_to(root))]
     if not events:
@@ -251,7 +270,7 @@ def scan(args: argparse.Namespace) -> int:
             print(f"Tuotiin {imported} analyysiä vanhasta välimuistista ({legacy_path.name}); tiedoston voi poistaa.")
         results = analyse_events(store, root, events, args.workers)
 
-        xmp_stats = {"created": 0, "updated": 0, "unchanged": 0, "error": 0, "skip": 0}
+        xmp_stats = {"updated": 0, "created": 0, "unchanged": 0, "user": 0, "skip": 0, "error": 0}
         moved = 0
         for shots in results.values():
             group_shots(shots, args.gap, args.hamming, 0.9)
@@ -259,7 +278,7 @@ def scan(args: argparse.Namespace) -> int:
             store.save_verdicts(shots)
             if args.write_xmp:
                 for s in shots:
-                    xmp_stats[write_xmp(s)] += 1
+                    xmp_stats[write_xmp(s, args.xmp_overwrite)] += 1
             if move_kinds:
                 moved_keys = [s.key for s in shots if move_rejects(s, move_kinds)]
                 store.mark_moved(moved_keys)
@@ -277,13 +296,22 @@ def scan(args: argparse.Namespace) -> int:
             counts[s.verdict] = counts.get(s.verdict, 0) + 1
     print("Tulokset: " + ", ".join(f"{VERDICT_FI.get(k, k)} {v}" for k, v in counts.items()))
     if args.write_xmp:
-        print(f"XMP: {xmp_stats['updated']} kuvan arvio päivitetty olemassa oleviin sivutiedostoihin, "
-              f"{xmp_stats['created']} uutta sivutiedostoa, {xmp_stats['unchanged']} ennallaan, "
-              f"{xmp_stats['error']} epäonnistui (ks. virheet yllä)")
+        print(f"XMP: {xmp_summary(xmp_stats)}")
     if move_kinds:
         print(f"Siirretty {moved} kuvaa {REJECT_DIR}-alikansioihin")
     print(f"Raportti: {html_path.resolve()}\nCSV:      {csv_path.resolve()}")
-    return 0
+    return 1 if args.write_xmp and xmp_stats["error"] else 0
+
+
+XMP_STATS_FI = {"updated": "päivitetty", "created": "uusi sivutiedosto", "unchanged": "jo ajan tasalla",
+                "user": "oma arvio säilytetty (ks. --xmp-overwrite)", "skip": "ei analysoitu",
+                "error": "epäonnistui (ks. virheet yllä)"}
+
+
+def xmp_summary(stats: dict[str, int]) -> str:
+    """``N kuvaa: päivitetty 3, uusi sivutiedosto 2`` – the counts that are not zero, all in photos."""
+    parts = [f"{XMP_STATS_FI[k]} {n}" for k, n in stats.items() if n]
+    return f"{sum(stats.values())} kuvaa" + (": " + ", ".join(parts) if parts else "")
 
 
 def is_loopback(host: str) -> bool:

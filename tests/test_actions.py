@@ -9,7 +9,16 @@ from pathlib import Path
 import pytest
 
 from karsija import actions
-from karsija.actions import REJECT_DIR, XMP_NS, XmpError, move_rejects, xmp_set, xmp_values
+from karsija.actions import (
+    REJECT_DIR,
+    XMP_NS,
+    UserValuesKept,
+    XmpError,
+    XmpWriteError,
+    move_rejects,
+    xmp_set,
+    xmp_values,
+)
 from karsija.analysis import Shot
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -27,6 +36,14 @@ ELEMENT_FORM = """<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
  </rdf:RDF>
 </x:xmpmeta>
 <?xpacket end="r"?>
+"""
+
+
+NEW_RATED = """<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" {}/>
+ </rdf:RDF>
+</x:xmpmeta>
 """
 
 
@@ -130,7 +147,7 @@ def test_xmp_set_creates_and_updates_both_styles(tmp_path: Path) -> None:
     assert text.startswith('<?xpacket begin="﻿"') and text.endswith('<?xpacket end="w"?>\n')
     assert rating_label(text) == [("5", "Green")]
     assert 'xmlns:xmp="http://ns.adobe.com/xap/1.0/"' in text
-    assert created.stat().st_mode & 0o777 == 0o644
+    assert created.stat().st_mode & 0o777 == 0o666 & ~actions._UMASK
 
     shutil.copy(FIXTURES / "darktable.nef.xmp", tmp_path / "a.nef.xmp")
     darktable = (tmp_path / "a.nef.xmp").read_text(encoding="utf-8")
@@ -197,10 +214,75 @@ def test_xmp_set_rolls_back_partial_write(tmp_path: Path, monkeypatch: pytest.Mo
         real(path, text)
 
     monkeypatch.setattr(actions, "_write_atomic", failing)
-    with pytest.raises(OSError):
+    with pytest.raises(XmpWriteError) as exc:
         xmp_set(tmp_path / "a.nef", 5, "Green")
     assert len(calls) == 3                                    # the first one was written and then put back
+    assert exc.value.restored == [tmp_path / "a.nef.xmp"] and exc.value.unrestored == []
     assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == before
+
+
+def test_xmp_set_reports_failed_rollback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    shutil.copy(FIXTURES / "darktable.nef.xmp", tmp_path / "a.nef.xmp")
+    shutil.copy(FIXTURES / "digikam.xmp", tmp_path / "a.xmp")
+    real = actions._write_atomic
+    calls: list[Path] = []
+
+    def disk_full_after_first(path: Path, text: str) -> None:
+        calls.append(path)
+        if len(calls) > 1:
+            raise OSError(28, "No space left on device")
+        real(path, text)
+
+    monkeypatch.setattr(actions, "_write_atomic", disk_full_after_first)
+    with pytest.raises(XmpWriteError) as exc:
+        xmp_set(tmp_path / "a.nef", 5, "Green")
+    assert exc.value.errno == 28
+    assert exc.value.restored == [] and exc.value.unrestored == [tmp_path / "a.nef.xmp"]
+
+
+def test_xmp_set_keep_user_values(tmp_path: Path) -> None:
+    sidecar = tmp_path / "a.xmp"
+    for own in ('xmp:Rating="4"', 'xmp:Rating="3" xmp:Label="Purple"'):
+        sidecar.write_text(NEW_RATED.format(own), encoding="utf-8")
+        before = sidecar.read_text(encoding="utf-8")
+        with pytest.raises(UserValuesKept) as exc:
+            xmp_set(tmp_path / "a.nef", 1, "Yellow", keep_user_values=True)
+        assert exc.value.sidecar == sidecar and sidecar.read_text(encoding="utf-8") == before
+    # karsija's own values (and darktable's default 1 star, digiKam's 0) are replaced
+    for own in ('xmp:Rating="5" xmp:Label="Green"', 'xmp:Rating="0"', ""):
+        sidecar.write_text(NEW_RATED.format(own), encoding="utf-8")
+        xmp_set(tmp_path / "a.nef", 1, "Yellow", keep_user_values=True)
+        assert rating_label(sidecar.read_text(encoding="utf-8")) == [("1", "Yellow")]
+
+
+def test_xmp_set_writes_through_symlink(tmp_path: Path) -> None:
+    real = tmp_path / "shared" / "real.xmp"
+    real.parent.mkdir()
+    shutil.copy(FIXTURES / "digikam.xmp", real)
+    (tmp_path / "a.xmp").symlink_to(real)
+    xmp_set(tmp_path / "a.nef", 5, "Green")
+    assert (tmp_path / "a.xmp").is_symlink()
+    assert rating_label(real.read_text(encoding="utf-8")) == [("5", "Green")]
+
+
+def test_xmp_set_read_only_left_alone(tmp_path: Path) -> None:
+    shutil.copy(FIXTURES / "darktable.nef.xmp", tmp_path / "a.nef.xmp")
+    shutil.copy(FIXTURES / "digikam.xmp", tmp_path / "a.xmp")
+    (tmp_path / "a.xmp").chmod(0o444)
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    with pytest.raises(PermissionError, match="a.xmp"):
+        xmp_set(tmp_path / "a.nef", 5, "Green")
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == before
+
+
+def test_xmp_set_mixed_line_endings(tmp_path: Path) -> None:
+    sidecar = tmp_path / "a.xmp"
+    data = ELEMENT_FORM.replace("\n", "\r\n", 3).encode()            # CRLF only in the prolog and first lines
+    sidecar.write_bytes(data)
+    xmp_set(tmp_path / "a.nef", 5, "Green")
+    after = sidecar.read_bytes()
+    assert after.startswith(data[:data.index(b"<x:xmpmeta")])
+    assert b"\r" not in after[after.index(b"<x:xmpmeta"):]           # the rewritten part is not given CRLF
 
 
 @pytest.mark.parametrize("content", ["<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF>", "not xml at all", "",

@@ -79,18 +79,33 @@ def test_scan_write_xmp_merges(library: Library, tmp_path: Path, capsys: pytest.
     darktable = (Path(__file__).parent / "fixtures" / "darktable.nef.xmp").read_text(encoding="utf-8")
     (event / "DSC_0100.NEF.xmp").write_text(darktable, encoding="utf-8")
     (event / "motion.xmp").write_text("<x:xmpmeta", encoding="utf-8")
+    users_own = darktable.replace('xmp:Rating="1"', 'xmp:Rating="4"')
+    (event / "sharp.jpg.xmp").write_text(users_own, encoding="utf-8")
     report = tmp_path / "report"
-    assert main(["scan", str(root), "--report", str(report), "--workers", "2", "--write-xmp"]) == 0
+    args = ["scan", str(root), "--report", str(report), "--workers", "2", "--write-xmp"]
+    assert main(args) == 1                                    # a sidecar failed
 
     captured = capsys.readouterr()
-    assert "XMP: 1 kuvan arvio päivitetty olemassa oleviin sivutiedostoihin, 8 uutta sivutiedostoa, 0 ennallaan, " \
-           "1 epäonnistui (ks. virheet yllä)" in captured.out
+    assert "XMP: 10 kuvaa: päivitetty 1, uusi sivutiedosto 7, oma arvio säilytetty (ks. --xmp-overwrite) 1, " \
+           "epäonnistui (ks. virheet yllä) 1" in captured.out
     assert "motion.xmp" in captured.err and "Korjaa tai siirrä" in captured.err
     assert (event / "motion.xmp").read_text(encoding="utf-8") == "<x:xmpmeta"
     merged = (event / "DSC_0100.NEF.xmp").read_text(encoding="utf-8")
     assert 'xmp:Rating="3"' in merged and "xmp:Label" not in merged and "rawprepare" in merged
     assert not (event / "DSC_0100.xmp").exists()
     assert 'xmp:Rating="-1"' in (event / "defocus.xmp").read_text(encoding="utf-8")
+    assert (event / "sharp.jpg.xmp").read_text(encoding="utf-8") == users_own
+    assert not (event / "sharp.xmp").exists()
+
+    (event / "motion.xmp").unlink()
+    assert main([*args, "--xmp-overwrite"]) == 0
+    assert "XMP: 10 kuvaa: päivitetty 1, uusi sivutiedosto 1, jo ajan tasalla 8" in capsys.readouterr().out
+    assert 'xmp:Rating="3"' in (event / "sharp.jpg.xmp").read_text(encoding="utf-8")
+
+
+def test_scan_xmp_overwrite_needs_write_xmp(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["scan", str(tmp_path), "--report", str(tmp_path / "r"), "--xmp-overwrite"]) == 1
+    assert "--xmp-overwrite toimii vain yhdessä --write-xmp:n kanssa" in capsys.readouterr().err
 
 
 def test_scan_imports_legacy_cache(library: Library, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

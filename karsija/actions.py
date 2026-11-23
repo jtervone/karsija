@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import io
 import os
 import re
@@ -20,6 +21,9 @@ REJECT_DIR = "_karsitut"
 RATING = {"best": 5, "keep": 3, "similar": 1, "blurry": -1}
 LABEL = {"best": "Green", "keep": "", "similar": "Yellow", "blurry": "Red"}
 OWN_LABELS = {v for v in LABEL.values() if v}      # the only labels an empty label removes
+# values karsija may replace when the user's own are kept: what it writes itself, 0 (unrated) or none
+OWN_RATING_VALUES = {"", "0", *(str(v) for v in RATING.values())}
+OWN_LABEL_VALUES = {"", *OWN_LABELS}
 
 X_NS = "adobe:ns:meta/"
 RDF_NS = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
@@ -44,8 +48,33 @@ _ROOT_NAME = re.compile(r"<([^\s/>]+)")
 _NS_LOCK = threading.Lock()
 
 
+# a new sidecar gets the mode open() would give it; read once, os.umask can only be read by setting it
+_UMASK = os.umask(0o022)
+os.umask(_UMASK)
+
+
 class XmpError(Exception):
     """A sidecar could not be read as XMP; it was left untouched."""
+
+
+class UserValuesKept(Exception):
+    """A sidecar holds a rating or label karsija does not write; with ``keep_user_values`` nothing was written."""
+
+    def __init__(self, sidecar: Path) -> None:
+        super().__init__(str(sidecar))
+        self.sidecar = sidecar
+
+
+class _UserValues(Exception):
+    """Internal: _merge found a value of the user's own."""
+
+
+class XmpWriteError(OSError):
+    """Writing a sidecar failed. ``unrestored``: sidecars already written that could not be put back."""
+
+    def __init__(self, error: OSError, restored: list[Path], unrestored: list[Path]) -> None:
+        super().__init__(error.errno, str(error))
+        self.restored, self.unrestored = restored, unrestored
 
 
 def xmp_values(verdict: str, user_verdict: str | None = None, user_rating: int | None = None) -> tuple[int, str] | None:
@@ -77,24 +106,34 @@ def sidecars(path: str | Path, files: Iterable[str | Path] = ()) -> list[Path]:
     return [c for c in dict.fromkeys(candidates) if c.exists()] or [p.with_suffix(".xmp")]
 
 
-def xmp_set(path: str | Path, rating: int, label: str, files: Iterable[str | Path] = ()) -> dict[Path, str | None]:
+def xmp_set(path: str | Path, rating: int, label: str, files: Iterable[str | Path] = (),
+            keep_user_values: bool = False) -> dict[Path, str | None]:
     """Write ``xmp:Rating`` and ``xmp:Label`` into every sidecar of the image ``path`` (and of ``files``).
 
     Existing sidecars are merged into: only Rating and Label change, everything else and the text around
     the root element stay. An empty ``label`` removes ``xmp:Label`` only when it is one karsija writes
-    (OWN_LABELS); a label of the user's own stays. Without a sidecar ``name.xmp`` is created.
-    Returns the previous content of each sidecar that changed, None for a created one; a sidecar that
-    already has the values is not rewritten. Raises XmpError, before anything is written, if a sidecar
-    is not valid XMP. On OSError the sidecars already written are put back before it is raised.
+    (OWN_LABELS); a label of the user's own stays. ``name.xmp`` is created only when there is no sidecar
+    at all. Returns the previous content of each sidecar that changed, None for a created one; a sidecar
+    that already has the values is not rewritten.
+
+    Nothing is written when a sidecar is not valid XMP (XmpError), cannot be read or is read-only
+    (OSError), or, with ``keep_user_values``, holds a rating or label karsija does not write itself
+    (UserValuesKept). If a write fails, the sidecars already written are put back and XmpWriteError
+    tells which could not be.
     """
     old: dict[Path, str | None] = {}
     new: dict[Path, str] = {}
     for sidecar in sidecars(path, files):
         prev = _read(sidecar) if sidecar.exists() else None
+        if prev is not None and not os.access(sidecar, os.W_OK):
+            # os.replace would only need a writable folder; a read-only sidecar is the user's way to protect it
+            raise PermissionError(errno.EACCES, "sivutiedosto on kirjoitussuojattu", str(sidecar))
         try:
-            text = _merge(NEW_XMP if prev is None else prev, rating, label)
+            text = _merge(NEW_XMP if prev is None else prev, rating, label, keep_user_values)
         except XmpError as e:
             raise XmpError(f"{sidecar}: {e}") from None
+        except _UserValues:
+            raise UserValuesKept(sidecar) from None
         if text != prev:
             new[sidecar], old[sidecar] = text, prev
     written: list[Path] = []
@@ -102,14 +141,19 @@ def xmp_set(path: str | Path, rating: int, label: str, files: Iterable[str | Pat
         for sidecar, text in new.items():
             _write_atomic(sidecar, text)
             written.append(sidecar)
-    except OSError:
+    except OSError as e:
+        restored, unrestored = [], []
         for sidecar in written:
             prev = old[sidecar]
-            if prev is None:
-                sidecar.unlink(missing_ok=True)
-            else:
-                _write_atomic(sidecar, prev)
-        raise
+            try:
+                if prev is None:
+                    sidecar.unlink(missing_ok=True)
+                else:
+                    _write_atomic(sidecar, prev)
+                restored.append(sidecar)
+            except OSError:
+                unrestored.append(sidecar)
+        raise XmpWriteError(e, restored, unrestored) from e
     return old
 
 
@@ -120,7 +164,7 @@ def _read(path: Path) -> str:
         raise XmpError(f"{path}: ei UTF-8-tekstiä ({e})") from None
 
 
-def _merge(text: str, rating: int, label: str) -> str:
+def _merge(text: str, rating: int, label: str, keep_user_values: bool = False) -> str:
     start = 1 if text.startswith("\ufeff") else 0
     while m := _PROLOG_ITEM.match(text, start):
         start = m.end()
@@ -129,7 +173,7 @@ def _merge(text: str, rating: int, label: str) -> str:
     end = text.rfind("</" + name.group(1)) if name else -1
     end = text.find(">", end) + 1 if end >= 0 else 0
     if not name or end <= start:
-        raise XmpError("XMP-juurielementtiä ei löydy")
+        raise XmpError("x:xmpmeta- tai rdf:RDF-elementtiä ei löydy, tai se on tyhjä")
     body = text[start:end]
     try:
         namespaces = [ns for _, ns in ET.iterparse(io.StringIO(body), events=("start-ns",))]
@@ -140,6 +184,9 @@ def _merge(text: str, rating: int, label: str) -> str:
         raise XmpError(f"virheellinen XML ({e})") from None
 
     descriptions = _descriptions(root)
+    if keep_user_values and not (_values(descriptions, "Rating") <= OWN_RATING_VALUES
+                                 and _values(descriptions, "Label") <= OWN_LABEL_VALUES):
+        raise _UserValues
     _set_property(descriptions, "Rating", str(rating))
     _set_property(descriptions, "Label", label or None, removable=OWN_LABELS)
 
@@ -159,8 +206,9 @@ def _merge(text: str, rating: int, label: str) -> str:
         ET.fromstring(out)                  # never write what the next reader cannot parse
     except ET.ParseError as e:
         raise XmpError(f"yhdistetty XMP ei ole kelvollista XML:ää ({e})") from None
-    if "\r\n" in body:
-        # expat turns CRLF into LF; newlines inside attribute values are escaped, so this is only layout
+    if "\r\n" in body and "\n" not in body.replace("\r\n", ""):
+        # expat turns CRLF into LF. When every newline was CRLF, turning them all back is exact (newlines
+        # inside attribute values are escaped); a file with mixed endings keeps LF in the rewritten part.
         out = out.replace("\n", "\r\n")
     return text[:start] + out + text[end:]
 
@@ -173,6 +221,13 @@ def _descriptions(root: ET.Element) -> list[ET.Element]:
         raise XmpError("rdf:RDF puuttuu")
     return rdf.findall(f"{{{RDF_NS}}}Description") or [
         ET.SubElement(rdf, f"{{{RDF_NS}}}Description", {f"{{{RDF_NS}}}about": ""})]
+
+
+def _values(descriptions: list[ET.Element], name: str) -> set[str]:
+    """Values of xmp:name, as an attribute or a child element, in the given descriptions."""
+    tag = f"{{{XMP_NS}}}{name}"
+    out = {d.attrib[tag].strip() for d in descriptions if tag in d.attrib}
+    return out | {(c.text or "").strip() for d in descriptions for c in d.findall(tag)}
 
 
 def _set_property(descriptions: list[ET.Element], name: str, value: str | None,
@@ -209,6 +264,7 @@ def _set_property(descriptions: list[ET.Element], name: str, value: str | None,
 
 
 def _write_atomic(path: Path, text: str) -> None:
+    path = path.resolve()           # a symlinked sidecar: replace the file it points to, keep the link
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
@@ -216,7 +272,7 @@ def _write_atomic(path: Path, text: str) -> None:
         if path.exists():
             shutil.copymode(path, tmp)
         else:
-            os.chmod(tmp, 0o644)
+            os.chmod(tmp, 0o666 & ~_UMASK)
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
