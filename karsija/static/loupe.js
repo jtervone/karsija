@@ -1,17 +1,21 @@
-// Loupe: one shot at full preview size, fitted or at 100 %, with its metadata beside it.
+// Loupe: one shot at full preview size, fitted or zoomed in, with its metadata beside it.
 import { api } from './api.js';
-import { DECISIONS, VERDICTS, stars } from './grid.js';
+import { DECISIONS, DecisionBadge, VERDICTS, stars } from './grid.js';
 import { SUGGESTION } from './review.js';
-import { fmt, html, preload, useEffect, useRef, useState } from './ui.js';
+import { fmt, html, preload, useEffect, useLayoutEffect, useRef, useState } from './ui.js';
 
 const PRELOAD_DELAY = 150;        // ms the loupe rests on a shot before its neighbours load (not while a key is held)
 const CLICK_SLOP = 4;             // px a press may move and still count as a click, not a drag
+const GRID_EDGE = 400;            // long edges of the previews (previews.SIZES)
+const FULL_EDGE = 2560;
 
 // ---------------------------------------------------------------------------------------------------------------- //
 // Where the image goes. `stage` and `img` are sizes `{ w, h }`: the stage in CSS pixels, the image in its own pixels.
 // `zoom` is null when fitted, else the image point at the stage's centre as fractions of the image `{ cx, cy }`: it
-// stays put from shot to shot, so the same spot of the next shot of a burst shows at 100 %. `dpr` is the device
-// pixel ratio: at 100 % one image pixel is one screen pixel.
+// stays put from shot to shot, so the same spot of the next shot of a burst shows zoomed in. `dpr` is the device
+// pixel ratio.
+
+const MIN_ENLARGE = 1.5;          // zooming in to one image pixel per screen pixel must enlarge at least this much
 
 /** On one axis: where an image of `len` starts in a stage of `size`, centred on fraction `c`, never leaving a gap. */
 function place(size, len, c) {
@@ -19,14 +23,36 @@ function place(size, len, c) {
   return Math.min(0, Math.max(size - len, size / 2 - c * len));
 }
 
-/** Scale (CSS px per image pixel) and top-left corner `{ s, x, y }` of the image in the stage. Fitting never enlarges. */
+/** Scale of the fitted image: all of it, never enlarged past one image pixel per screen pixel. */
+function fitScale(stage, img, dpr) {
+  return Math.min(stage.w / img.w, stage.h / img.h, 1 / dpr);
+}
+
+/**
+ * Scale (CSS px per image pixel) when zoomed in: one image pixel per screen pixel (100 %), or, where that hardly
+ * enlarges the fitted image (a HiDPI screen), one per CSS pixel (200 % on a 2× screen). Null when even that would
+ * not enlarge it: the image already shows whole at full size.
+ */
+export function zoomScale(stage, img, dpr = 1) {
+  const fit = fitScale(stage, img, dpr);
+  if (1 / dpr >= fit * MIN_ENLARGE) return 1 / dpr;
+  return 1 > fit * 1.01 ? 1 : null;
+}
+
+/** The zoom in screen pixels as text: `100 %`, `200 %`. */
+export const zoomLabel = (s, dpr = 1) => `${Math.round(s * dpr * 100)} %`;
+
+/**
+ * Scale and top-left corner `{ s, x, y, zoomed }` of the image in the stage. `zoomed` is false when `zoom` is null or
+ * zooming in would not enlarge the image.
+ */
 export function layout(stage, img, zoom, dpr = 1) {
-  if (!zoom) {
-    const s = Math.min(stage.w / img.w, stage.h / img.h, 1 / dpr);
-    return { s, x: (stage.w - img.w * s) / 2, y: (stage.h - img.h * s) / 2 };
+  const s = zoom ? zoomScale(stage, img, dpr) : null;
+  if (s == null) {
+    const fit = fitScale(stage, img, dpr);
+    return { s: fit, x: (stage.w - img.w * fit) / 2, y: (stage.h - img.h * fit) / 2, zoomed: false };
   }
-  const s = 1 / dpr;
-  return { s, x: place(stage.w, img.w * s, zoom.cx), y: place(stage.h, img.h * s, zoom.cy) };
+  return { s, x: place(stage.w, img.w * s, zoom.cx), y: place(stage.h, img.h * s, zoom.cy), zoomed: true };
 }
 
 /** `zoom` as far as the image can actually move: the centre that `layout` shows for it. */
@@ -37,22 +63,39 @@ export function clampZoom(stage, img, zoom, dpr = 1) {
 
 const clamp01 = (v) => Math.min(Math.max(v, 0), 1);
 
-/** 100 % with the image point under `point` (stage coordinates, fitted) staying under it; `point` null: the centre. */
+/**
+ * Zoomed in with the image point under `point` (stage coordinates, fitted; beside the image: its nearest edge)
+ * staying under it; `point` null: the centre. Null when zooming in would not enlarge the image.
+ */
 export function zoomAt(stage, img, point, dpr = 1) {
+  const s = zoomScale(stage, img, dpr);
+  if (s == null) return null;
   const fit = layout(stage, img, null, dpr);
   const p = point ?? { x: stage.w / 2, y: stage.h / 2 };
   const fx = clamp01((p.x - fit.x) / (img.w * fit.s));
   const fy = clamp01((p.y - fit.y) / (img.h * fit.s));
-  const s = 1 / dpr;
   return clampZoom(stage, img, { cx: fx + (stage.w / 2 - p.x) / (img.w * s), cy: fy + (stage.h / 2 - p.y) / (img.h * s) },
     dpr);
 }
 
 /** `zoom` dragged by `dx`, `dy` CSS pixels (the image follows the pointer). */
 export function pan(stage, img, zoom, dx, dy, dpr = 1) {
-  const s = 1 / dpr;
+  const { s } = layout(stage, img, zoom, dpr);
   const from = clampZoom(stage, img, zoom, dpr);
   return clampZoom(stage, img, { cx: from.cx - dx / (img.w * s), cy: from.cy - dy / (img.h * s) }, dpr);
+}
+
+/**
+ * Size to lay out a shot whose full preview has not loaded yet, from its loaded grid preview `grid`: the last loaded
+ * full preview's `last` when the shape is the same (a burst), else the grid preview's scaled up to the full
+ * preview's long edge. The full preview of an original smaller than that is the original's size, as is the grid's.
+ */
+export function guessSize(grid, last) {
+  if (!grid) return null;
+  if (last && Math.abs(grid.w / grid.h - last.w / last.h) < 0.01) return last;
+  const edge = Math.max(grid.w, grid.h);
+  const k = edge < GRID_EDGE ? 1 : FULL_EDGE / edge;
+  return { w: grid.w * k, h: grid.h * k };
 }
 
 // ---------------------------------------------------------------------------------------------------------------- //
@@ -185,6 +228,7 @@ function Meta({ shot, best, position, exif, exifError }) {
         <${Row} label="Puhki palaneet" value=${fmtShare(shot.clip_hi)} title="ylivalottuneiden pikselien osuus" />
         <${Row} label="Tukkoiset varjot" value=${fmtShare(shot.clip_lo)} title="täysin mustien pikselien osuus" />`}
       <${Row} label="Kuvattu" value=${shot.taken > 0 ? seconds.format(new Date(shot.taken * 1000)) : null} />
+      ${exif == null && !exifError && html`<dt>Kuvaustiedot</dt><dd class="muted">ladataan…</dd>`}
       <${Row} label="Valotusaika" value=${fmtExposure(e.exposure_time)} />
       <${Row} label="Aukko" value=${fmtAperture(e.f_number)} />
       <${Row} label="Herkkyys" value=${fmtIso(e.iso)} />
@@ -198,19 +242,25 @@ function Meta({ shot, best, position, exif, exifError }) {
   </aside>`;
 }
 
+/** Natural size `{ src, w, h }` of a loaded image, from its `load` event. */
+const sizeOf = (src, e) => ({ src, w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight });
+
 /**
  * The loupe of `shot`. `best`: sharpness of its group's sharpest shot (see `groupBest`), `position`: where it is, as
  * text, `neighbours`: the shots ←/→ lead to, whose previews load ahead. `keys.current` is set to the loupe's own key
  * handler (Z), which the event view calls.
  *
- * Fitted at first. Z or a click goes to 100 % around the pointer (Z without the pointer over the image: around the
- * centre), and back; at 100 % the image is dragged to pan. The zoom stays when moving to another shot.
+ * Fitted at first. Z or a click zooms in (see `zoomScale`) around the pointer (beside the image: its nearest edge;
+ * Z without the pointer over the stage: the centre), and back; zoomed in, the image is dragged to pan. The zoom stays
+ * when moving to another shot; until the next full preview has loaded, its grid preview stands in at the same place.
  */
 export function Loupe({ shot, best, position, neighbours, keys }) {
   const stageRef = useRef(null);
   const stage = useSize(stageRef);
   const [zoom, setZoom] = useState(null);
   const [img, setImg] = useState(null);           // { src, w, h } of the full preview once loaded, or { src, error }
+  const [grid, setGrid] = useState(null);         // { src, w, h } of the grid preview once loaded
+  const last = useRef(null);                       // size of the last full preview loaded
   const [dragging, setDragging] = useState(false);
   const pointer = useRef(null);                    // pointer position over the stage, null when not over it
   const drag = useRef(null);
@@ -218,20 +268,27 @@ export function Loupe({ shot, best, position, neighbours, keys }) {
   usePreloadNeighbours(neighbours);
 
   const src = shot.preview.full;
+  const failed = img?.src === src && !!img.error;
   const loaded = img?.src === src && !img.error ? img : null;
+  const size = failed ? null : loaded ?? guessSize(grid?.src === shot.preview.grid ? grid : null, last.current);
   const dpr = globalThis.devicePixelRatio || 1;
-  const box = loaded && stage ? layout(stage, loaded, zoom, dpr) : null;
+  const box = size && stage ? layout(stage, size, zoom, dpr) : null;
+  const canZoom = !!box && (box.zoomed || zoomScale(stage, size, dpr) != null);
 
+  /** Zoom in at `point`, or back to fitted. False when nothing changes. */
   const toggle = (point) => {
-    if (!loaded || !stage) return;
-    setZoom(zoom ? null : zoomAt(stage, loaded, point, dpr));
-  };
-  keys.current = (action) => {
-    if (action.type !== 'zoom') return false;
-    toggle(pointer.current);
+    if (zoom) {
+      setZoom(null);
+      return true;
+    }
+    if (!canZoom) return false;
+    setZoom(zoomAt(stage, size, point, dpr));
     return true;
   };
-  useEffect(() => () => { keys.current = null; }, []);
+  useLayoutEffect(() => {
+    keys.current = (action) => action.type === 'zoom' && toggle(pointer.current);
+    return () => { keys.current = null; };
+  });
 
   const at = (e) => {
     const r = stageRef.current.getBoundingClientRect();
@@ -240,7 +297,7 @@ export function Loupe({ shot, best, position, neighbours, keys }) {
   const onPointerDown = (e) => {
     if (e.button !== 0) return;
     e.currentTarget.setPointerCapture(e.pointerId);
-    drag.current = { x: e.clientX, y: e.clientY, from: zoom, moved: false };
+    drag.current = { x: e.clientX, y: e.clientY, from: box?.zoomed ? zoom : null, moved: false };
   };
   const onPointerMove = (e) => {
     pointer.current = at(e);
@@ -250,9 +307,9 @@ export function Loupe({ shot, best, position, neighbours, keys }) {
     const dy = e.clientY - d.y;
     if (!d.moved && Math.hypot(dx, dy) < CLICK_SLOP) return;
     d.moved = true;
-    if (d.from && loaded && stage) {
+    if (d.from && size && stage) {
       setDragging(true);
-      setZoom(pan(stage, loaded, d.from, dx, dy, dpr));
+      setZoom(pan(stage, size, d.from, dx, dy, dpr));
     }
   };
   const onPointerUp = (e) => {
@@ -266,25 +323,32 @@ export function Loupe({ shot, best, position, neighbours, keys }) {
     setDragging(false);
   };
 
-  const placed = box && { width: `${loaded.w * box.s}px`, height: `${loaded.h * box.s}px`,
+  const placed = box && { width: `${size.w * box.s}px`, height: `${size.h * box.s}px`,
                           transform: `translate(${box.x}px, ${box.y}px)` };
   const decided = shot.user_verdict;
-  const cls = `stage${zoom ? ' zoomed' : ''}${dragging ? ' dragging' : ''}${decided ? ` ${decided}` : ''}`;
+  const cls = `stage${box?.zoomed ? ' zoomed' : ''}${canZoom ? '' : ' still'}${dragging ? ' dragging' : ''}`
+    + `${decided ? ` ${decided}` : ''}`;
+  let title;
+  if (box?.zoomed) title = 'Vedä siirtääksesi, klikkaa sovittaaksesi (Z)';
+  else if (canZoom) title = `Klikkaa: ${zoomLabel(zoomScale(stage, size, dpr), dpr)} (Z)`;
   return html`<div class="loupe">
     <div ref=${stageRef} class=${cls}
         onPointerDown=${onPointerDown} onPointerMove=${onPointerMove} onPointerUp=${onPointerUp}
         onPointerCancel=${onPointerCancel} onPointerLeave=${() => { if (!drag.current) pointer.current = null; }}
-        title=${zoom ? 'Vedä siirtääksesi, klikkaa sovittaaksesi (Z)' : 'Klikkaa: 100 % (Z)'}>
-      <img class=${placed ? 'placed' : 'fitted'} style=${placed || undefined} src=${shot.preview.grid} alt=""
-        draggable="false" />
+        title=${title}>
+      <img key=${shot.preview.grid} class=${placed ? 'placed' : 'fitted'} style=${placed || undefined}
+        src=${shot.preview.grid} alt="" draggable="false"
+        onLoad=${(e) => setGrid(sizeOf(shot.preview.grid, e))} />
       <img key=${src} class=${placed ? 'placed' : 'fitted'} style=${placed || undefined} src=${src} alt=${shot.name}
         draggable="false" decoding="async"
-        onLoad=${(e) => setImg({ src, w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
+        onLoad=${(e) => {
+          last.current = sizeOf(src, e);
+          setImg(last.current);
+        }}
         onError=${() => setImg({ src, error: true })} />
-      ${img?.src === src && img.error && html`<p class="stage-error">Esikatselua ei voi näyttää.</p>`}
-      ${decided && html`<span class=${`decision ${decided}`} title=${`oma päätös: ${DECISIONS[decided]}`}>
-        ${decided === 'keep' ? '✓' : '✕'}</span>`}
-      ${zoom && html`<span class="zoom-label">100 %</span>`}
+      <${DecisionBadge} decided=${decided} />
+      ${failed && html`<p class="stage-label error">Esikatselua ei voi näyttää.</p>`}
+      ${box?.zoomed && html`<span class="stage-label">${zoomLabel(box.s, dpr)}${loaded ? '' : ' · ladataan…'}</span>`}
     </div>
     <${Meta} shot=${shot} best=${best} position=${position} exif=${exif} exifError=${exifError} />
   </div>`;

@@ -5,6 +5,13 @@ import { SUGGESTION } from './review.js';
 export const VERDICTS = { best: 'paras', keep: 'hyvä', similar: 'samankaltainen', blurry: 'epäterävä', error: 'virhe' };
 export const DECISIONS = { keep: 'pidä', reject: 'hylkää' };
 
+/** The corner badge of the user's own decision (`keep` or `reject`), or nothing. */
+export function DecisionBadge({ decided }) {
+  if (!decided) return null;
+  return html`<span class=${`decision ${decided}`} title=${`oma päätös: ${DECISIONS[decided]}`}>
+    ${decided === 'keep' ? '✓' : '✕'}</span>`;
+}
+
 export function stars(rating) {
   return rating === 0 ? '☆' : '★'.repeat(rating);
 }
@@ -39,8 +46,7 @@ class Card extends Component {
         onClick=${() => onPick(shot.id)} onDblClick=${() => onOpen(shot.id)}>
       <div class="thumb">
         <img src=${shot.preview.grid} alt="" loading="lazy" decoding="async" draggable="false" />
-        ${decided && html`<span class=${`decision ${decided}`} title=${`oma päätös: ${DECISIONS[decided]}`}>
-          ${decided === 'keep' ? '✓' : '✕'}</span>`}
+        <${DecisionBadge} decided=${decided} />
         ${shot.rating != null && html`<span class="stars" title=${`${shot.rating} tähteä`}>${stars(shot.rating)}</span>`}
       </div>
       <figcaption>

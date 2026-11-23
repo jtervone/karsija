@@ -30,14 +30,19 @@ function usePreload(order, shots, current) {
   }, [order, current]);     // not on decisions: they do not change the previews
 }
 
-/** Where `id` is: `Kuva 12 / 340 · ryhmässä 2 / 5`, among the shown shots. */
-export function position(order, id) {
+/**
+ * Where `id` is among the shown shots: `Kuva 12 / 340 · ryhmässä 2 / 5`, and the filters that hide the others
+ * (`filters` as in `filterGroups`): `(suodatettu: vain ehdokkaat)`.
+ */
+export function position(order, id, filters = {}) {
   const group = order.group(id);
-  const text = `Kuva ${fmt(order.index.get(id) + 1)} / ${fmt(order.ids.length)}`;
-  if (!group || group.members.length < 2) return text;
-  const hidden = group.members.length - group.ids.length;
-  const where = `ryhmässä ${group.ids.indexOf(id) + 1} / ${group.ids.length}`;
-  return `${text} · ${where}${hidden > 0 ? ` (${hidden} piilossa)` : ''}`;
+  let text = `Kuva ${fmt(order.index.get(id) + 1)} / ${fmt(order.ids.length)}`;
+  if (group && group.members.length > 1) {
+    const hidden = group.members.length - group.ids.length;
+    text += ` · ryhmässä ${group.ids.indexOf(id) + 1} / ${group.ids.length}${hidden > 0 ? ` (${hidden} piilossa)` : ''}`;
+  }
+  const active = FILTERS.filter(([key]) => filters[key]).map(([, label]) => label.toLowerCase());
+  return active.length ? `${text} (suodatettu: ${active.join(', ')})` : text;
 }
 
 function Counts({ ev, shots }) {
@@ -243,7 +248,7 @@ export function EventView({ route, version }) {
     ${data && route.view === 'loupe' && (current == null
       ? html`<p class="muted">Ei näytettävää kuvaa. <a href=${grid}>Takaisin ruudukkoon</a></p>`
       : html`<${Loupe} shot=${shots.get(current)} best=${best.get(currentGroup.key)} keys=${loupeKeys}
-          position=${position(order, current)}
+          position=${position(order, current, filters)}
           neighbours=${[order.step(current, -1), order.step(current, 1)].filter((id) => id !== current)
             .map((id) => shots.get(id))} />`)}
     ${data && route.view === 'compare' && html`<p class="muted">
