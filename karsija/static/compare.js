@@ -21,16 +21,23 @@ export function bestFirst(ids, shots) {
   return [...ids].sort((a, b) => {
     const x = shots.get(a);
     const y = shots.get(b);
-    return rank(x) - rank(y) || (rank(x) === 1 ? y.sharp - x.sharp : 0);
+    return rank(x) - rank(y) || (rank(x) === 1 ? (y.sharp ?? 0) - (x.sharp ?? 0) : 0);
   });
+}
+
+/** Whether the compare view can show `group` (see `filterGroups`): a group with at least two shots shown. */
+export const comparable = (group) => group?.groupId != null && group.ids.length > 1;
+
+/** The shot `by` places from `id` in `ids`, stopping at either end. */
+export function stepWithin(ids, id, by) {
+  return ids[Math.min(Math.max(ids.indexOf(id) + by, 0), ids.length - 1)];
 }
 
 /** The nearest group `by` (±1) groups from that of `id` that has at least two shots shown, or null. */
 export function comparableGroup(order, id, by) {
   for (let i = (order.groupIndex.get(id) ?? (by > 0 ? -1 : order.groups.length)) + by;
     i >= 0 && i < order.groups.length; i += by) {
-    const g = order.groups[i];
-    if (g.groupId != null && g.ids.length > 1) return g;
+    if (comparable(order.groups[i])) return order.groups[i];
   }
   return null;
 }
@@ -103,6 +110,7 @@ function PaneInfo({ shot, best }) {
   const suggestion = SUGGESTION[auto];
   const decided = shot.user_verdict;
   const sharp = sharpText(shot, best);
+  const ratio = best > 0 && !shot.error ? shot.sharp / best : null;
   return html`<div class="pane-info">
     <div class="line">
       <span class="auto" title=${shot.reason || undefined}>
@@ -112,7 +120,8 @@ function PaneInfo({ shot, best }) {
         ${shot.rating != null && ' '}<${Stars} rating=${shot.rating} /></span>
     </div>
     <div class="line">
-      <span class="sharp" title=${sharp ? `terävyys ${sharp}` : shot.error}>${sharp ?? shot.error}</span>
+      <span class="sharp" title=${sharp ? `terävyys ${sharp}` : shot.error}>${shot.error
+        ? shot.error : `${Math.round(shot.sharp)}${ratio != null ? ` · ${Math.round(ratio * 100)} %` : ''}`}</span>
       <span class="name" title=${shot.path}>${shot.name}</span>
     </div>
   </div>`;
@@ -192,10 +201,13 @@ function Pane({ shot, best, selected, view, setView, onSelect, onToggle, zooms, 
   const cls = `stage${box?.zoomed ? ' zoomed' : ''}${!selected && !box?.zoomed ? ' pick' : ''}`
     + `${selected && !canZoom && !view ? ' still' : ''}${dragging ? ' dragging' : ''}${decided ? ` ${decided}` : ''}`;
   let title;
+  const unzoomed = !!view && !!box && !box.zoomed;     // zoomed in elsewhere, but this image would not enlarge
   if (box?.zoomed) title = `Vedä siirtääksesi kaikkia, klikkaa ${selected ? 'sovittaaksesi (Z)' : 'valitaksesi'}`;
-  else if (!selected) title = 'Klikkaa valitaksesi';
-  else if (view) title = 'Klikkaa sovittaaksesi kaikki (Z)';
-  else if (canZoom) title = `Klikkaa: ${zoomLabel(zoomScale(stage, size, dpr), dpr)} kaikissa (Z)`;
+  else if (!selected) title = `${unzoomed ? 'Ei suurennettavissa. ' : ''}Klikkaa valitaksesi`;
+  else if (view) {
+    title = 'Ei suurennettavissa: esikatselu näkyy jo kokonaan täydessä koossa. Klikkaa sovittaaksesi kaikki (Z)';
+  }
+  else if (canZoom) title = `Klikkaa: ${zoomLabel(zoomScale(stage, size, dpr), dpr)} tästä, muut samaan kohtaan (Z)`;
   return html`<figure class=${`pane verdict-${shot.auto_verdict ?? 'none'}${selected ? ' selected' : ''}`}
       aria-current=${selected ? 'true' : undefined} data-shot=${shot.id}>
     <div ref=${stageRef} class=${cls} title=${title}
@@ -214,8 +226,9 @@ function Pane({ shot, best, selected, view, setView, onSelect, onToggle, zooms, 
       <${DecisionBadge} decided=${decided} />
       ${failed && html`<p class="stage-label error">
         Täysikokoista esikatselua ei voi näyttää; vain ruudukon pikkukuva.</p>`}
-      ${!failed && (box?.zoomed || !loaded) && html`<span class="stage-label">
-        ${[box?.zoomed && zoomLabel(box.s, dpr), !loaded && 'ladataan…'].filter(Boolean).join(' · ')}</span>`}
+      ${!failed && (box?.zoomed || unzoomed || !loaded) && html`<span class="stage-label">
+        ${[box?.zoomed && zoomLabel(box.s, dpr), unzoomed && 'sovitettu, ei suurennettavissa', !loaded && 'ladataan…']
+          .filter(Boolean).join(' · ')}</span>`}
     </div>
     <${PaneInfo} shot=${shot} best=${best} />
   </figure>`;
@@ -225,15 +238,18 @@ function Pane({ shot, best, selected, view, setView, onSelect, onToggle, zooms, 
  * Vertailu of `group` (see `filterGroups`): `ids` its shown shots best first (see `bestFirst`), at most
  * `MAX_PANES` of them at a time, those around `current`, the selected one. `best`: sharpness of the group's
  * sharpest shot, `position`: where `current` is, as text, `next`: the shots whose full previews load ahead (the
- * next group's). `onPick(id)` selects a shot. `keys.current` is set to the view's own key handler (Z).
+ * next group's). `onPick(id)` selects a shot, `notify(text)` shows a passing message. `keys.current` is set to the
+ * view's own key handler (Z).
  *
  * Every pane shows the same viewport (see `paneLayout`): fitted at first; Z or a click on the selected pane zooms
  * every pane in around the same spot, and back; dragging a zoomed pane pans them all. A new group starts fitted.
  */
-export function Compare({ group, ids, shots, current, best, position, next, onPick, keys }) {
+export function Compare({ group, ids, shots, current, best, position, next, onPick, notify, keys }) {
   const [state, setState] = useState({ key: null, view: null });
   const view = state.key === group.key ? state.view : null;
   const setView = (v) => setState({ key: group.key, view: v });
+  // a group starts fitted, also one returned to: forget the zoom of the group left
+  useEffect(() => { setState({ key: group.key, view: null }); }, [group.key]);
   const zooms = useRef(new Map());
   const hover = useRef(null);
   const last = useRef(null);                       // size of the last full preview loaded, for guessSize
@@ -246,14 +262,21 @@ export function Compare({ group, ids, shots, current, best, position, next, onPi
   usePreloadFull([ids[start - 1], ids[start + MAX_PANES], ...next].filter((id) => id != null)
     .map((id) => shots.get(id)));
 
-  /** Fit every pane, or zoom in at `point` of the pane of `id` (null: its centre). False when nothing changes. */
+  /**
+   * Fit every pane, or zoom in at `point` of the pane of `id` (null: its centre); when that image would not enlarge,
+   * at the centre of the first pane whose image would. False when nothing changes.
+   */
   const toggle = (id, point) => {
     if (view) {
       setView(null);
       return true;
     }
-    const v = zooms.current.get(id)?.(point);
-    if (!v) return false;
+    let v = zooms.current.get(id)?.(point);
+    for (const other of visible) v = v ?? zooms.current.get(other)?.(null);
+    if (!v) {
+      notify('Yhtäkään näistä kuvista ei voi suurentaa: esikatselut näkyvät jo täydessä koossa.');
+      return false;
+    }
     setView(v);
     return true;
   };
@@ -273,14 +296,13 @@ export function Compare({ group, ids, shots, current, best, position, next, onPi
     return () => { keys.current = null; };
   });
 
-  const cols = visible.length === 4 ? 2 : visible.length;
   return html`<div class="compare">
     <p class="position muted">
       <span>${position}${ids.length > MAX_PANES
         && ` · näkyvissä ${start + 1}–${start + visible.length} / ${ids.length}`}</span>
       <span class="hint">Klikkaus valitsee, valitun klikkaus tai Z suurentaa kaikki, vetäminen siirtää kaikkia</span>
     </p>
-    <div class="panes" style=${{ '--cols': cols, '--rows': Math.ceil(visible.length / cols) }}>
+    <div class="panes" data-count=${visible.length}>
       ${visible.map((id) => html`<${Pane} key=${id} shot=${shots.get(id)} best=${best} selected=${id === current}
         view=${view} setView=${setView} onSelect=${onPick} onToggle=${toggle} zooms=${zooms} hover=${hover}
         last=${last} />`)}

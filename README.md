@@ -69,10 +69,10 @@ picks a shot, a double-click opens it (like Enter). The whole event can be revie
 | P, X | keep, reject |
 | 0–5 | stars |
 | U | back to the suggestion: clears the decision and the stars |
-| Space | accept the suggestion for the group's shots that have no decision yet (also those a filter hides) and go to the next group (in compare, to its compare view) |
+| Space | accept the suggestion for the group's shots that have no decision yet (also those a filter hides) and go to the next group (in compare, the next group with two or more shots shown) |
 | Ctrl+Z | undo the last decision (a Space counts as one); again to go further back |
-| Enter, C | open the shot in the loupe, compare the group's shots |
-| Z | in the loupe and compare: zoom in (100 %, or 200 % on a 2× screen) around the pointer (or the centre) / fit |
+| Enter, C | open the shot (in compare, the selected one) in the loupe, compare the group's shots |
+| Z | in the loupe and compare: zoom in (100 %, or 200 % on a 2× screen) around the pointer (or the centre; in compare, of the selected pane) / fit |
 | Esc | back to the grid; in the grid, closes the message under the toolbar |
 | ? | all of these on the page |
 
@@ -99,19 +99,29 @@ apply, and the next and previous shots' previews load ahead. Esc (or Back) retur
 scrolled only as far as the current shot needs.
 
 C opens **Vertailu** (`#/event/<id>/compare/<group>`) for the current shot's group: its shown shots side by side,
-best first (the one judged best, then by sharpness), two or three in a row, four in a 2 × 2 grid. A larger group
-shows four at a time: ← → move the selection within the group, and the panes follow it only as far as they need.
-Under each pane: the automatic verdict and its suggestion, your decision and stars, the sharpness with its share of
-the group's sharpest, and the file name. A click selects a pane; P, X, 0–5 and U apply to the selected one. A click
-on the selected pane (or Z, around the pointer over any pane) zooms every pane in to the same spot: one viewport
-drives them all, its centre as fractions of each image and its size as the length of the image's long edge, so the
-same spot shows at the same size even where the previews differ in size, shape or orientation. The zoom is 100 % of
-the pane zoomed in on (200 % on a 2× screen, as in the loupe); a pane whose image that would not enlarge stays
-fitted. Drag any zoomed pane to pan them all; a click on the selected pane or Z fits them again. Space accepts the
-group's suggestion and opens the next group with two or more shots shown, fitted (after the last one it stays and
-says so); ↑ ↓ move between such groups.
-Enter does nothing here; Esc (or Back) returns to the grid. A group a filter has cut to one shot cannot be compared
-from the grid.
+best first (the one judged best, then by sharpness, shots that could not be analysed last), two or three in a row
+(three in a 2 × 2 grid on a window under 72rem), four in a 2 × 2 grid; on a narrow window one under another, and the
+page scrolls. A larger group shows four at a time: ← → move the selection within the group, and the panes follow it
+only as far as they need. Above the panes: which of the comparable groups this is, how many shots it shows (and how
+many a filter hides), the active filters and, in a larger group, which four are shown. Under each pane: the
+automatic verdict and its suggestion, your decision and stars, the sharpness with its % of the group's sharpest, and
+the file name. A click selects a pane; P, X, 0–5 and U apply to the selected one, and Enter opens it in the loupe.
+
+A click on the selected pane, or Z, zooms every pane in to the same spot: around the pointer when it is over a pane,
+otherwise around the centre of the selected pane (or, if its image would not enlarge, of the first one whose image
+would). One viewport drives them all, its centre as fractions of each image and its size as the length of the
+image's long edge, so the same spot shows at the same size even where the previews differ in size, shape or
+orientation. The zoom is 100 % of the pane zoomed in on (200 % on a 2× screen, as in the loupe), and each pane's
+label shows its own; a pane whose image would not enlarge stays fitted, labelled *sovitettu, ei suurennettavissa*.
+Drag any zoomed pane to pan them all; a click on the selected pane or Z fits them again. The zoom stays while ← →
+move the selection; another group starts fitted. Previews load as in the loupe (the grid preview stands in, labelled
+*ladataan…*), and the panes just outside the four shown and the next group's first four load ahead.
+
+Space accepts the group's suggestion and opens the next group with two or more shots shown (after the last one it
+stays and says how many shots are still without a decision; Space skips single shots); ↑ ↓ move between such
+groups. Esc (or Back) returns to the grid. A shot with no group, or a group a filter has cut to one shot, cannot be
+compared: C says so in the grid, an address to such a group says so on the page, and Ctrl+Z in the compare view that
+undoes a decision of such a shot shows it in the loupe.
 
 The UI needs no network: Preact and htm are vendored in `karsija/static/vendor/` (versions and licences in its
 README), there is no build step, and the page's Content-Security-Policy lets it load nothing from other sites.

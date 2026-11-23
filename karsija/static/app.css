@@ -180,13 +180,21 @@ progress:indeterminate::-moz-progress-bar { background: transparent; }
   position: absolute; right: .6rem; width: fit-content; left: .6rem; bottom: .6rem; margin: 0; padding: .1rem .45rem; border-radius: 4px;
   background: rgba(0, 0, 0, .7); font-size: .85rem;
 }
-/* Vertailu: 2–3 panes in a row, 4 in a 2 × 2 grid, each with its own stage and the shot's verdicts under it */
+/* Vertailu: 2–3 panes in a row (3 in a 2 × 2 grid below 72rem), 4 in a 2 × 2 grid, each with its own stage and the
+   shot's verdicts under it */
 .compare { flex: 1; min-height: 0; display: flex; flex-direction: column; margin-top: .5rem; }
 .compare .position { margin: 0 0 .5rem; font-size: .85rem; display: flex; flex-wrap: wrap; gap: 0 .4rem; }
 .compare .hint { margin-left: auto; }
 .panes {
   flex: 1; min-height: 0; display: grid; gap: .7rem;
-  grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); grid-template-rows: repeat(var(--rows), minmax(0, 1fr));
+  grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr));
+  grid-template-rows: repeat(var(--rows, 1), minmax(0, 1fr));
+}
+.panes[data-count="1"] { --cols: 1; }
+.panes[data-count="3"] { --cols: 3; }
+.panes[data-count="4"] { --rows: 2; }
+@media (max-width: 72rem) {
+  .panes[data-count="3"] { --cols: 2; --rows: 2; }
 }
 .pane {
   --v: var(--line);
@@ -206,6 +214,7 @@ progress:indeterminate::-moz-progress-bar { background: transparent; }
 .pane-info .line > * { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pane-info .auto { color: var(--v); font-weight: 600; }
 .pane.verdict-keep .auto { color: var(--text); }
+.pane.verdict-none .auto, .card.verdict-none .auto { color: var(--muted); }
 .pane-info .sharp, .pane-info .name { color: var(--muted); font-variant-numeric: tabular-nums; }
 .pane-info .decided { flex: none; }
 .pane-info .decided.keep, .pane-info .decided.reject { font-weight: 600; }

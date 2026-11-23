@@ -1,7 +1,8 @@
 // Unit tests of the compare view's shared viewport and pane selection: run by tests/test_ui_js.py (`node --test`).
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { bestFirst, comparableGroup, panView, paneLayout, viewAt, windowStart } from '../../karsija/static/compare.js';
+import { bestFirst, comparable, comparableGroup, panView, paneLayout, stepWithin, viewAt, windowStart }
+  from '../../karsija/static/compare.js';
 import { comparePosition } from '../../karsija/static/event.js';
 import { layout } from '../../karsija/static/loupe.js';
 import { Order } from '../../karsija/static/review.js';
@@ -112,4 +113,23 @@ test('where the compare view is', () => {
   assert.equal(comparePosition(order, 1, { candidates: true }),
     'Ryhmä 1 / 2 · 2 kuvaa, paras ensin · suodatettu: vain ehdokkaat');
   assert.equal(comparePosition(new Order([g('g1', 1, [1], [1, 2])]), 1), 'Ryhmä · 1 kuva, 1 piilossa');
+});
+
+test('← → in the compare view stay within the group', () => {
+  assert.equal(stepWithin([3, 1, 2], 1, 1), 2);
+  assert.equal(stepWithin([3, 1, 2], 1, -1), 3);
+  assert.equal(stepWithin([3, 1, 2], 2, 1), 2);
+  assert.equal(stepWithin([3, 1, 2], 3, -1), 3);
+});
+
+test('a missing sharpness sorts as zero', () => {
+  const shots = new Map([[1, { sharp: null, auto_verdict: 'similar' }], [2, { sharp: 5, auto_verdict: 'similar' }]]);
+  assert.deepEqual(bestFirst([1, 2], shots), [2, 1]);
+});
+
+test('comparable: a group with two or more shots shown', () => {
+  assert.ok(comparable({ groupId: 1, ids: [1, 2] }));
+  assert.ok(!comparable({ groupId: 1, ids: [1], members: [1, 2] }));
+  assert.ok(!comparable({ groupId: null, ids: [1] }));
+  assert.ok(!comparable(null));
 });

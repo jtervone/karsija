@@ -1,5 +1,5 @@
 // Event views: the Tapahtuma grid, the loupe and the compare view, which share its keys and decisions.
-import { Compare, MAX_PANES, bestFirst, comparableGroup } from './compare.js';
+import { Compare, MAX_PANES, bestFirst, comparable, comparableGroup, stepWithin } from './compare.js';
 import { Grid, groupBest } from './grid.js';
 import { ShortcutHelp, useKeys } from './keys.js';
 import { Loupe } from './loupe.js';
@@ -114,9 +114,10 @@ export function EventView({ route, version }) {
 
   const grid = `#/event/${eventId}`;
   const currentGroup = current == null ? null : order.group(current);
-  // the compare view's shots, and the shot of a group it starts at: its best (decisions do not change the order)
+  // The compare view's shots, and the shot of a group it starts at: its best. Sorted by the shots as last loaded:
+  // decisions change neither the verdicts nor the sharpness the order is made of.
   const compared = useMemo(() => (currentGroup ? bestFirst(currentGroup.ids, latest.current) : []), [currentGroup]);
-  const firstOf = (g) => bestFirst(g.ids, shots)[0];
+  const firstOf = (g) => bestFirst(g.ids, latest.current)[0];
 
   // The loupe and compare views keep the current shot (its group) in their address, so a reload or the back
   // button returns to it. A new address (a link, Back) moves the cursor first; until the cursor has followed it,
@@ -208,15 +209,12 @@ export function EventView({ route, version }) {
     }
     if (action.type === 'zoom') return route.view !== 'event' && viewKeys.current ? viewKeys.current(action) : false;
     if (current == null) return false;
-    if (action.type === 'open' && route.view !== 'event') return false;
+    if (action.type === 'open' && route.view === 'loupe') return false;
     if (cursor == null) setCursor(current);      // the first unreviewed shot, until then only derived
     switch (action.type) {
       case 'move':
-        if (comparing) {
-          // within the group: the panes follow the selection
-          const i = compared.indexOf(current);
-          setCursor(compared[Math.min(Math.max(i + action.by, 0), compared.length - 1)]);
-        } else setCursor(order.step(current, action.by));
+        // in compare within the group: the panes follow the selection
+        setCursor(comparing ? stepWithin(compared, current, action.by) : order.step(current, action.by));
         break;
       case 'group':
         if (!comparing) setCursor(order.stepGroup(current, action.by));
@@ -232,7 +230,13 @@ export function EventView({ route, version }) {
         const group = order.group(current);
         review.accept(group);
         if (comparing) {
-          if (!compareGroup(1)) review.notify('Tämä oli viimeinen vertailtava ryhmä. Esc palaa ruudukkoon.');
+          if (!compareGroup(1)) {
+            // Space skips the shots that cannot be compared: say how many are left to review in the grid
+            let left = 0;
+            for (const [id, s] of shots) if (s.user_verdict == null && !group.members.includes(id)) left += 1;
+            review.notify(`Tämä oli viimeinen vertailtava ryhmä. ${left > 0
+              ? `Ruudukossa on vielä ${fmt(left)} kuvaa ilman päätöstä. ` : ''}Esc palaa ruudukkoon.`);
+          }
           break;
         }
         const next = order.stepGroup(current, 1);
@@ -241,7 +245,13 @@ export function EventView({ route, version }) {
       }
       case 'undo': {
         const back = review.undo().find((id) => order.index.has(id));
-        if (back != null) setCursor(back);
+        if (back == null) break;
+        setCursor(back);
+        if (comparing && !comparable(order.group(back))) {
+          // the undone shot cannot be compared: show it in the loupe instead
+          location.hash = `${grid}/loupe/${back}`;
+          review.notify('Kumottu päätös on kuvalla, jota ei voi vertailla; se näkyy kuvanäkymässä.');
+        }
         break;
       }
       case 'open':
@@ -300,11 +310,14 @@ export function EventView({ route, version }) {
           position=${position(order, current, filters)}
           neighbours=${[order.step(current, -1), order.step(current, 1)].filter((id) => id !== current)
             .map((id) => shots.get(id))} />`)}
-    ${data && comparing && (current == null
-      ? html`<p class="muted">Ei vertailtavaa. <a href=${grid}>Takaisin ruudukkoon</a></p>`
+    ${data && comparing && (!comparable(currentGroup)
+      ? html`<p class="muted">Ei vertailtavaa: ${current == null ? 'ei näytettäviä kuvia' : html`kuvalla ei ole ryhmää,
+          tai suodattimet jättävät ryhmästä näkyviin vain sen. <a href=${`${grid}/loupe/${current}`}>Avaa kuva</a> ·`}
+          <a href=${grid}>Takaisin ruudukkoon</a></p>`
       : html`<${Compare} group=${currentGroup} ids=${compared} shots=${shots} current=${current}
           best=${best.get(currentGroup.key)} position=${comparePosition(order, current, filters)} keys=${viewKeys}
-          next=${nextGroup ? bestFirst(nextGroup.ids, shots).slice(0, MAX_PANES) : []} onPick=${setCursor} />`)}
+          next=${nextGroup ? bestFirst(nextGroup.ids, shots).slice(0, MAX_PANES) : []} onPick=${setCursor}
+          notify=${review.notify} />`)}
     ${help && html`<${ShortcutHelp} onClose=${() => setHelp(false)} />`}
   </main>`;
 }
