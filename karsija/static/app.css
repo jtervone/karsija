@@ -12,6 +12,8 @@
   --similar: #d29922;
   --blurry: #f85149;
   --error: #a371f7;
+  --star: #f5c518;
+  --kept: #1f6f3a;          /* the ✓ badge: white on it stays readable */
 }
 
 * { box-sizing: border-box; }
@@ -30,8 +32,9 @@ code { background: var(--panel-hi); padding: 0 .25em; border-radius: 3px; }
 .crumbs { margin: 0 0 .5rem; }
 
 .offline {
-  position: sticky; top: 0; z-index: 1; padding: .4rem 1.5rem; text-align: center;
-  background: var(--panel-hi); border-bottom: 2px solid var(--similar); color: var(--text);
+  /* at the bottom, over the event view's sticky toolbar too */
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 20; padding: .4rem 1.5rem; text-align: center;
+  background: var(--panel-hi); border-top: 2px solid var(--similar); color: var(--text);
 }
 
 .top { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; flex-wrap: wrap; }
@@ -92,6 +95,80 @@ progress:indeterminate::-moz-progress-bar { background: transparent; }
 .verdict-blurry { color: var(--blurry); border-color: var(--blurry); }
 .verdict-error { color: var(--error); border-color: var(--error); }
 
+/* Tapahtuma: a sticky toolbar over the grid of groups and cards */
+.page.wide { max-width: none; }
+.toolbar {
+  position: sticky; top: 0; z-index: 2; background: var(--bg); display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: .3rem 1rem; padding: .4rem 0 .5rem; border-bottom: 1px solid var(--line);
+}
+.toolbar h1 { font-size: 1.3rem; }
+.toolbar .counts { font-size: .9rem; }
+.filters { display: flex; flex-wrap: wrap; gap: .2rem .9rem; font-size: .9rem; }
+.filters label { white-space: nowrap; cursor: pointer; }
+.help-button { margin-left: auto; padding: .1rem .6rem; font-weight: 600; }
+/* under the toolbar, out of the flow, so a message does not move the grid */
+.notices {
+  position: absolute; top: 100%; left: 0; right: 0; display: flex; flex-direction: column; gap: .2rem;
+  padding: .3rem .5rem; background: var(--panel); border-bottom: 1px solid var(--line); font-size: .9rem;
+}
+.notice { color: var(--muted); }
+.notice.error { color: var(--blurry); display: flex; align-items: baseline; gap: .6rem; }
+.notice .dismiss { padding: 0 .5rem; margin-left: auto; }
+
+.grid { display: flex; flex-wrap: wrap; align-items: flex-start; gap: .6rem; margin-top: .8rem; }
+.group {
+  max-width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: .25rem .4rem .4rem;
+}
+.group > header { font-size: .8rem; color: var(--muted); margin: 0 0 .25rem .1rem; }
+.group .cards { display: flex; flex-wrap: wrap; gap: .4rem; }
+
+.card {
+  --v: var(--line);
+  width: 11rem; margin: 0; background: var(--panel-hi); border: 2px solid var(--v); border-top-width: 5px;
+  border-radius: 6px; overflow: hidden; cursor: pointer; user-select: none;
+  /* under the toolbar when scrolled to; off-screen cards are not laid out or painted */
+  scroll-margin: calc(var(--toolbar-h, 7rem) + .5rem) 0 3rem; content-visibility: auto; contain-intrinsic-size: auto 11rem auto 11.5rem;
+}
+.card.verdict-best { --v: var(--best); }
+.card.verdict-keep { --v: var(--keep); }
+.card.verdict-similar { --v: var(--similar); }
+.card.verdict-blurry { --v: var(--blurry); }
+.card.verdict-error { --v: var(--error); }
+.card:hover .thumb { filter: brightness(1.12); }
+.card.current { outline: 3px solid #fff; outline-offset: 2px; }
+.card .thumb { position: relative; aspect-ratio: 3 / 2; background: #000; }
+.card img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.card.reject img { opacity: .35; filter: grayscale(.7); }
+.card .decision {
+  position: absolute; top: .3rem; right: .3rem; width: 1.6rem; height: 1.6rem; border-radius: 50%;
+  display: grid; place-items: center; font-weight: 700; color: #fff; box-shadow: 0 0 0 2px #000;
+}
+.card .decision.keep { background: var(--kept); }
+.card .decision.reject { background: var(--blurry); }
+.card .stars {
+  position: absolute; left: .3rem; bottom: .3rem; padding: 0 .3rem; border-radius: 4px; font-size: .85rem;
+  background: rgba(0, 0, 0, .7); color: var(--star);
+}
+.card figcaption { padding: .2rem .4rem .3rem; font-size: .75rem; line-height: 1.35; }
+.card .line { display: flex; justify-content: space-between; gap: .3rem; }
+.card .auto { color: var(--v); font-weight: 600; }
+.card.verdict-keep .auto { color: var(--text); }
+.card .sharp { color: var(--muted); font-variant-numeric: tabular-nums; }
+.card .auto, .card .sharp, .card .reason, .card .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .name { color: var(--muted); }
+
+.overlay {
+  position: fixed; inset: 0; z-index: 10; display: flex; overflow: auto; padding: 1rem; background: rgba(0, 0, 0, .6);
+}
+/* centred when it fits, scrolls with the overlay when the window is too short */
+.help { max-width: 34rem; margin: auto; padding: .5rem 1.5rem 1rem; background: var(--panel); border-radius: 8px; }
+.help dl { display: grid; grid-template-columns: max-content 1fr; gap: .35rem 1rem; }
+.help dt, .help dd { margin: 0; }
+kbd {
+  font: .85rem ui-monospace, monospace; padding: .05rem .35rem; border: 1px solid var(--line); border-bottom-width: 2px;
+  border-radius: 4px; background: var(--panel-hi);
+}
+
 /* narrow screens: one card per event, every count with its label. Below 52rem the six columns leave the name too
    little room. */
 @media (max-width: 52rem) {
@@ -114,6 +191,10 @@ progress:indeterminate::-moz-progress-bar { background: transparent; }
   .top .actions { width: 100%; }
   .top .progress { display: flex; flex-direction: column; align-items: stretch; gap: .2rem; white-space: normal; }
   .top progress { width: 100%; }
+}
+
+@media (max-width: 40rem) {
+  .card { width: 9rem; contain-intrinsic-size: auto 9rem auto 10rem; }
 }
 
 /* phones: the counts in a 2 × 2 grid */

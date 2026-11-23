@@ -1,9 +1,9 @@
 // Preact + htm from the vendored copies: no build step, nothing from the network.
-import { h, render } from './vendor/preact.js';
+import { Component, h, render } from './vendor/preact.js';
 import htm from './vendor/htm.js';
 
-export { render };
-export { useCallback, useEffect, useMemo, useRef, useState } from './vendor/hooks.js';
+export { Component, render };
+export { useCallback, useEffect, useMemo, useReducer, useRef, useState } from './vendor/hooks.js';
 export const html = htm.bind(h);
 
 const numbers = new Intl.NumberFormat('fi-FI');

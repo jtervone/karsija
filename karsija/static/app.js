@@ -103,7 +103,9 @@ function NotFound() {
 function App() {
   const route = useRoute();
   const jobs = useJobs();
-  useEffect(() => { scrollTo(0, 0); }, [route.view, route.event]);
+  // a new page starts at the top; the event views keep their place (the grid scrolls to its current shot)
+  const page = route.view === 'library' || route.view === 'notfound' ? route.view : `event ${route.event}`;
+  useEffect(() => { scrollTo(0, 0); }, [page]);
 
   let view;
   if (route.view === 'library') view = html`<${Kirjasto} jobs=${jobs} />`;
