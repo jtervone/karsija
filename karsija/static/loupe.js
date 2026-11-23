@@ -19,7 +19,7 @@ const FULL_EDGE = 2560;
 const MIN_ENLARGE = 1.5;          // zooming in to one image pixel per screen pixel must enlarge at least this much
 
 /** On one axis: where an image of `len` starts in a stage of `size`, centred on fraction `c`, never leaving a gap. */
-function place(size, len, c) {
+export function place(size, len, c) {
   if (len <= size) return (size - len) / 2;
   return Math.min(0, Math.max(size - len, size / 2 - c * len));
 }
@@ -177,7 +177,7 @@ function usePreloadNeighbours(neighbours) {
 }
 
 /** Size of the element `ref` in CSS pixels, `{ w, h }`, or null before it is laid out. */
-function useSize(ref) {
+export function useSize(ref) {
   const [size, setSize] = useState(null);
   useEffect(() => {
     const el = ref.current;
@@ -199,18 +199,24 @@ function Row({ label, value, title }) {
   return value == null || value === '' ? null : html`<dt>${label}</dt><dd title=${title}>${value}</dd>`;
 }
 
+/**
+ * Sharpness of `shot` as text, with its share of `best` (the sharpness of its group's sharpest shot, when the group
+ * has more than one): `1 234 · 82 % ryhmän terävimmästä`. Null for a shot that could not be analysed.
+ */
+export function sharpText(shot, best) {
+  if (shot.error) return null;
+  const sharp = fmt(Math.round(shot.sharp));
+  if (!(best > 0)) return sharp;
+  if (shot.sharp >= best) return `${sharp} · ryhmän terävin`;
+  return `${sharp} · ${Math.round((shot.sharp / best) * 100)} % ryhmän terävimmästä`;
+}
+
 /** The shot's metadata. `best`: sharpness of its group's sharpest shot, when the group has more than one. */
 function Meta({ shot, best, position, exif, exifError }) {
   const auto = shot.auto_verdict;
   const suggestion = SUGGESTION[auto];
   const decided = shot.user_verdict;
-  let sharp = null;
-  if (!shot.error) {
-    sharp = fmt(Math.round(shot.sharp));
-    if (best > 0) {
-      sharp += shot.sharp >= best ? ' · ryhmän terävin' : ` · ${Math.round((shot.sharp / best) * 100)} % ryhmän terävimmästä`;
-    }
-  }
+  const sharp = sharpText(shot, best);
   const e = exif ?? {};
   const loading = exif == null && !exifError;
   const exifRow = (label, value) => html`<${Row} label=${label} value=${loading ? '…' : value} />`;
@@ -247,7 +253,7 @@ function Meta({ shot, best, position, exif, exifError }) {
 }
 
 /** Natural size `{ src, w, h }` of a loaded image, from its `load` event. */
-const sizeOf = (src, e) => ({ src, w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight });
+export const sizeOf = (src, e) => ({ src, w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight });
 
 /**
  * The loupe of `shot`. `best`: sharpness of its group's sharpest shot (see `groupBest`), `position`: where it is, as

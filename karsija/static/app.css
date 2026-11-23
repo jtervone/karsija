@@ -157,7 +157,7 @@ progress:indeterminate::-moz-progress-bar { background: transparent; }
 .card .auto, .card .sharp, .card .reason, .card .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card .name { color: var(--muted); }
 
-/* Loupe: the image fills what the toolbar leaves of the window, the metadata beside it */
+/* Loupe and Vertailu: the images fill what the toolbar leaves of the window, the loupe's metadata beside it */
 .page.loupe-page { height: 100vh; height: 100dvh; display: flex; flex-direction: column; padding-bottom: .8rem; }
 .offline ~ .page.loupe-page { padding-bottom: 2.6rem; }      /* the banner covers no part of the image */
 .loupe { flex: 1; min-height: 0; display: flex; gap: .8rem; margin-top: .8rem; }
@@ -180,6 +180,39 @@ progress:indeterminate::-moz-progress-bar { background: transparent; }
   position: absolute; right: .6rem; width: fit-content; left: .6rem; bottom: .6rem; margin: 0; padding: .1rem .45rem; border-radius: 4px;
   background: rgba(0, 0, 0, .7); font-size: .85rem;
 }
+/* Vertailu: 2–3 panes in a row, 4 in a 2 × 2 grid, each with its own stage and the shot's verdicts under it */
+.compare { flex: 1; min-height: 0; display: flex; flex-direction: column; margin-top: .5rem; }
+.compare .position { margin: 0 0 .5rem; font-size: .85rem; display: flex; flex-wrap: wrap; gap: 0 .4rem; }
+.compare .hint { margin-left: auto; }
+.panes {
+  flex: 1; min-height: 0; display: grid; gap: .7rem;
+  grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); grid-template-rows: repeat(var(--rows), minmax(0, 1fr));
+}
+.pane {
+  --v: var(--line);
+  display: flex; flex-direction: column; min-height: 0; margin: 0; background: var(--panel); color: var(--text);
+  border: 2px solid var(--v); border-top-width: 5px; border-radius: 6px; overflow: hidden;
+}
+.pane.verdict-best { --v: var(--best); }
+.pane.verdict-keep { --v: var(--keep); }
+.pane.verdict-similar { --v: var(--similar); }
+.pane.verdict-blurry { --v: var(--blurry); }
+.pane.verdict-error { --v: var(--error); }
+.pane.selected { outline: 3px solid #fff; outline-offset: 2px; }
+.pane .stage { min-height: 0; border-radius: 0; }
+.stage.pick { cursor: pointer; }
+.pane-info { flex: none; padding: .25rem .5rem .35rem; font-size: .85rem; line-height: 1.4; }
+.pane-info .line { display: flex; justify-content: space-between; gap: .6rem; }
+.pane-info .line > * { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pane-info .auto { color: var(--v); font-weight: 600; }
+.pane.verdict-keep .auto { color: var(--text); }
+.pane-info .sharp, .pane-info .name { color: var(--muted); font-variant-numeric: tabular-nums; }
+.pane-info .decided { flex: none; }
+.pane-info .decided.keep, .pane-info .decided.reject { font-weight: 600; }
+.pane-info .decided.keep { color: var(--best); }
+.pane-info .decided.reject { color: var(--blurry); }
+.pane-info .stars { color: var(--star); font-weight: normal; }
+
 .meta {
   --v: var(--line);
   flex: none; width: 19rem; overflow-y: auto; background: var(--panel); border-radius: 6px; border-top: 5px solid var(--v);
@@ -244,6 +277,8 @@ kbd {
   .loupe { flex-direction: column; }
   .stage { flex: none; height: 75vh; }
   .meta { width: auto; }
+  .panes { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
+  .pane .stage { height: 60vh; }
 }
 
 @media (max-width: 40rem) {

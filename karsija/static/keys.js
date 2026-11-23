@@ -3,17 +3,18 @@ import { html, useEffect, useRef } from './ui.js';
 
 /** The shortcuts as the help overlay lists them. */
 export const SHORTCUTS = [
-  ['← →', 'edellinen / seuraava kuva (pidä painettuna selataksesi)'],
-  ['↑ ↓', 'edellinen / seuraava ryhmä'],
+  ['← →', 'edellinen / seuraava kuva (pidä painettuna selataksesi); vertailussa ryhmän sisällä'],
+  ['↑ ↓', 'edellinen / seuraava ryhmä; vertailussa seuraava ryhmä, jossa on vertailtavaa'],
   ['P', 'pidä'],
   ['X', 'hylkää'],
   ['0–5', 'tähdet'],
   ['U', 'takaisin ehdotukseen (poistaa oman päätöksen ja tähdet)'],
   ['Välilyönti', 'hyväksy ehdotus ryhmän kuville, joilla ei vielä ole päätöstä (myös suodattimen piilottamille), '
-    + 'ja siirry seuraavaan ryhmään'],
+    + 'ja siirry seuraavaan ryhmään (vertailussa sen vertailuun)'],
   ['Enter', 'avaa kuva'],
   ['C', 'vertaile ryhmän kuvia'],
-  ['Z', 'suurenna hiiren kohdalta (100 %, HiDPI-näytöllä 200 %) / sovita (kuvanäkymässä); myös klikkaus'],
+  ['Z', 'suurenna hiiren kohdalta (100 %, HiDPI-näytöllä 200 %) / sovita (kuvanäkymässä; vertailussa kaikki '
+    + 'kuvat samasta kohdasta); myös klikkaus'],
   ['Esc', 'takaisin ruudukkoon; ruudukossa sulkee ilmoituksen'],
   ['Ctrl+Z', 'kumoa viimeisin tallennettu päätös (myös toisessa tapahtumassa tai aiemmin tehty)'],
   ['?', 'näytä tai piilota pikanäppäimet'],
