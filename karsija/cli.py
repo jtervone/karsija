@@ -141,10 +141,12 @@ SCAN_EPILOG = ("Mitään ei poisteta. --write-xmp kirjoittaa tuomion XMP-sivutie
                "sivutiedostossa on oma arvio tai väritunniste (muu kuin karsijan kirjoittama), jätetään ennalleen; "
                "--xmp-overwrite korvaa nekin. Pidä-tuomio poistaa vain karsijan omat väritunnisteet. nimi.xmp luodaan "
                "vain, jos kuvalla ei ole yhtään sivutiedostoa. "
-               f"--move siirtää karsitut tapahtumakansion {REJECT_DIR}-alikansioon, josta ne voi siirtää takaisin.")
+               f"--move siirtää karsitut tapahtumakansion {REJECT_DIR}-alikansioon, josta ne voi siirtää takaisin käsin "
+               "(siirtoa ei kirjata, joten Palauta karsitut ei palauta sitä).")
 
 
-SERVE_EPILOG = ("Palvelin ei kirjoita kirjastoon mitään: päätökset ja analyysit tallentuvat tietokantaan, "
+SERVE_EPILOG = ("Palvelin kirjoittaa kirjastoon vain, kun tapahtuma toteutetaan (Toteuta) tai palautetaan "
+                "(Palauta karsitut). Päätökset ja analyysit tallentuvat tietokantaan, "
                 "oletuksena kirjaston ulkopuolelle (ks. --db), ja esikatselukuvat välimuistiin (ks. --previews; "
                 "tavallisesti 0,5–1 Mt kuvaa kohden, kansion voi poistaa milloin vain).")
 
