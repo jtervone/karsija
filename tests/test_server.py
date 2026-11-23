@@ -189,7 +189,8 @@ def test_ui_files_refer_to_no_other_origin() -> None:
     """The page works offline: no file of the UI names a URL of another site (the policy would block it anyway)."""
     files = [p for p in server_mod.STATIC_DIR.rglob("*") if p.suffix in (".html", ".js", ".css")]
     assert {p.relative_to(server_mod.STATIC_DIR).as_posix() for p in files} >= {
-        "index.html", "app.js", "app.css", "vendor/preact.js", "vendor/hooks.js", "vendor/htm.js"}
+        "index.html", "app.js", "app.css", "event.js", "grid.js", "keys.js", "review.js", "vendor/preact.js",
+        "vendor/hooks.js", "vendor/htm.js"}
     for p in files:
         text = p.read_text().replace("http://www.w3.org/", "")    # Preact's SVG and MathML namespace names
         assert not re.search(r"""(?:https?:)?//[a-z0-9.-]+\.[a-z]{2,}/""", text, re.I), p
@@ -465,6 +466,20 @@ def test_same_origin_bodyless_writes_need_no_content_type(clean: Server) -> None
     assert client.post("/api/decisions/undo", headers={"Origin": "http://evil.example"}).status_code == 403
     assert client.post("/api/decisions/undo", headers={"Origin": BASE, "Content-Type": "text/plain"},
                        content=b"x").status_code == 415
+
+
+def test_ui_writes(clean: Server) -> None:
+    """The requests the Tapahtuma view sends: JSON bodies (``{}`` for accept and undo) from its own origin."""
+    client, shots = clean.client, clean.shots()
+    ui = {"Origin": BASE, **JSON}
+    shot_id = shots["sharp.jpg"]["id"]
+    (shot,) = client.patch(f"/api/shots/{shot_id}", json={"user_verdict": None, "rating": None}, headers=ui) \
+        .json()["shots"]
+    assert (shot["user_verdict"], shot["rating"]) == (None, None)
+    group = shots[BURST[0]]["group_id"]
+    resp = client.post(f"/api/groups/{clean.event_id}/{group}/accept", json={}, headers=ui)
+    assert resp.status_code == 200 and len(resp.json()["shots"]) == 5
+    assert client.post("/api/decisions/undo", json={}, headers=ui).json()["batch"] == resp.json()["batch"]
 
 
 def test_docs_are_off_by_default(server: Server, tmp_path: Path) -> None:
