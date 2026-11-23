@@ -121,21 +121,9 @@ def xmp_set(path: str | Path, rating: int, label: str, files: Iterable[str | Pat
     (UserValuesKept). If a write fails, the sidecars already written are put back and XmpWriteError
     tells which could not be.
     """
-    old: dict[Path, str | None] = {}
-    new: dict[Path, str] = {}
-    for sidecar in sidecars(path, files):
-        prev = _read(sidecar) if sidecar.exists() else None
-        if prev is not None and not os.access(sidecar, os.W_OK):
-            # os.replace would only need a writable folder; a read-only sidecar is the user's way to protect it
-            raise PermissionError(errno.EACCES, "sivutiedosto on kirjoitussuojattu", str(sidecar))
-        try:
-            text = _merge(NEW_XMP if prev is None else prev, rating, label, keep_user_values)
-        except XmpError as e:
-            raise XmpError(f"{sidecar}: {e}") from None
-        except _UserValues:
-            raise UserValuesKept(sidecar) from None
-        if text != prev:
-            new[sidecar], old[sidecar] = text, prev
+    changes = xmp_changes(path, rating, label, files, keep_user_values)
+    old = {sidecar: prev for sidecar, (prev, _) in changes.items()}
+    new = {sidecar: text for sidecar, (_, text) in changes.items()}
     written: list[Path] = []
     try:
         for sidecar, text in new.items():
@@ -155,6 +143,32 @@ def xmp_set(path: str | Path, rating: int, label: str, files: Iterable[str | Pat
                 unrestored.append(sidecar)
         raise XmpWriteError(e, restored, unrestored) from e
     return old
+
+
+def xmp_changes(path: str | Path, rating: int, label: str, files: Iterable[str | Path] = (),
+                keep_user_values: bool = False) -> dict[Path, tuple[str | None, str]]:
+    """What ``xmp_set`` would write, without writing: ``sidecar -> (previous content or None, new content)`` for
+    each sidecar that would change. Raises as ``xmp_set`` does before it writes anything."""
+    out: dict[Path, tuple[str | None, str]] = {}
+    for sidecar in sidecars(path, files):
+        prev = _read(sidecar) if sidecar.exists() else None
+        if prev is not None and not os.access(sidecar, os.W_OK):
+            # os.replace would only need a writable folder; a read-only sidecar is the user's way to protect it
+            raise PermissionError(errno.EACCES, "sivutiedosto on kirjoitussuojattu", str(sidecar))
+        try:
+            text = _merge(NEW_XMP if prev is None else prev, rating, label, keep_user_values)
+        except XmpError as e:
+            raise XmpError(f"{sidecar}: {e}") from None
+        except _UserValues:
+            raise UserValuesKept(sidecar) from None
+        if text != prev:
+            out[sidecar] = (prev, text)
+    return out
+
+
+def write_atomic(path: Path, text: str) -> None:
+    """Replace (or create) ``path`` with ``text`` at once: a reader sees the old file or the new one."""
+    _write_atomic(path, text)
 
 
 def _read(path: Path) -> str:

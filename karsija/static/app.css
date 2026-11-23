@@ -105,6 +105,8 @@ progress:indeterminate::-moz-progress-bar { background: transparent; }
 .toolbar .counts { font-size: .9rem; }
 .filters { display: flex; flex-wrap: wrap; gap: .2rem .9rem; font-size: .9rem; }
 .filters label { white-space: nowrap; cursor: pointer; }
+.apply-button { margin-left: auto; }
+.apply-button + .help-button { margin-left: 0; }
 .help-button { margin-left: auto; padding: .1rem .6rem; font-weight: 600; }
 /* under the toolbar, out of the flow, so a message does not move the grid */
 .notices {
@@ -251,6 +253,24 @@ progress:indeterminate::-moz-progress-bar { background: transparent; }
 .help { max-width: 34rem; margin: auto; padding: .5rem 1.5rem 1rem; background: var(--panel); border-radius: 8px; }
 .help dl { display: grid; grid-template-columns: max-content 1fr; gap: .35rem 1rem; }
 .help dt, .help dd { margin: 0; }
+/* Toteuta: the confirmation and the history under the grid */
+.help.apply { max-width: 44rem; }
+.apply .plan-summary { font-size: 1.05rem; }
+.apply .buttons { display: flex; gap: .6rem; margin-top: 1rem; }
+.apply details { margin: .4rem 0; }
+.paths { margin: .3rem 0; padding-left: 1.2rem; max-height: 14rem; overflow: auto; font-size: .85rem; }
+.paths code { overflow-wrap: anywhere; }
+.applies { margin-top: 2rem; border-top: 1px solid var(--line); }
+.applies ul { list-style: none; padding: 0; margin: 0; }
+.applies li {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem 1rem; padding: .45rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.applies li > .error, .applies .log { flex-basis: 100%; font-size: .85rem; overflow-wrap: anywhere; }
+.applies .status { color: var(--muted); }
+.applies .apply-done .status { color: var(--best); }
+.applies .apply-failed .status { color: var(--blurry); }
+.applies .confirm { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: .5rem; }
 kbd {
   font: .85rem ui-monospace, monospace; padding: .05rem .35rem; border: 1px solid var(--line); border-bottom-width: 2px;
   border-radius: 4px; background: var(--panel-hi);

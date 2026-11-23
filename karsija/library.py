@@ -206,6 +206,16 @@ def safe_path(root: Path, rel: str) -> Path:
     return p
 
 
+def inside_root(root: Path, files: list[str]) -> bool:
+    """Every file of a shot resolves inside the library root (no symlink out of it)."""
+    try:
+        for f in files:
+            safe_path(root, Path(f).relative_to(root).as_posix())
+    except (UnsafePath, ValueError):
+        return False
+    return True
+
+
 # --------------------------------------------------------------------------- #
 # Discovery
 # --------------------------------------------------------------------------- #

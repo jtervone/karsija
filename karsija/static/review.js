@@ -239,10 +239,12 @@ export function useReview(eventId, version) {
   /** Show a passing message, or clear it with null. */
   const notify = useCallback((text) => dispatch({ type: 'notice', notice: text == null ? null : { text } }), []);
   const dismiss = useCallback(() => dispatch({ type: 'dismiss' }), []);
+  /** Resolves once every decision made so far has been stored or refused. */
+  const settled = useCallback(() => chain.current, []);
 
   return {
     data: ours ? state.data : null, groups: ours ? state.groups : [], shots,
     error: state.error?.eventId === eventId ? state.error.message : null,
-    notice: state.notice, failure: state.failure, decide, accept, undo, notify, dismiss,
+    notice: state.notice, failure: state.failure, decide, accept, undo, notify, dismiss, settled,
   };
 }

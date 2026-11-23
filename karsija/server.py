@@ -27,9 +27,19 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from karsija import apply as applies
 from karsija import previews
 from karsija.analysis import Shot, analyse_file, group_and_judge
-from karsija.library import JPEG_EXT, RAW_EXT, RawpyMissing, UnsafePath, collect_shots, find_event_dirs, safe_path
+from karsija.library import (
+    JPEG_EXT,
+    RAW_EXT,
+    RawpyMissing,
+    UnsafePath,
+    collect_shots,
+    find_event_dirs,
+    inside_root,
+    safe_path,
+)
 from karsija.store import UNSET, Store
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -105,16 +115,6 @@ def sync_events(store: Store, root: Path) -> list[tuple[int, Path]]:
             continue
         out.append((store.event_id(rel), path))
     return out
-
-
-def inside_root(root: Path, files: list[str]) -> bool:
-    """Every file of a shot resolves inside the library root (no symlink out of it)."""
-    try:
-        for f in files:
-            safe_path(root, Path(f).relative_to(root).as_posix())
-    except (UnsafePath, ValueError):
-        return False
-    return True
 
 
 def etag_matches(if_none_match: str, etag: str) -> bool:
@@ -244,6 +244,10 @@ class AnalyseRequest(BaseModel):
     scope: Literal["all"] | int = "all"
 
 
+class ApplyRequest(BaseModel):
+    confirm_token: str
+
+
 class DecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     user_verdict: Literal["keep", "reject"] | None = None
@@ -340,10 +344,11 @@ Db = Annotated[Store, Depends(get_store, scope="function")]
 
 def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[], None] | None = None,
                allowed_hosts: Collection[str] = LOOPBACK_HOSTS, docs: bool = False,
-               preview_dir: Path | None = None) -> FastAPI:
+               preview_dir: Path | None = None, undone_dir: Path | None = None) -> FastAPI:
     """``allowed_hosts``: accepted ``Host`` header names, see ``RequestGuard``.
 
-    ``preview_dir``: preview cache, by default ``previews.default_cache_dir()``.
+    ``preview_dir``: preview cache, by default ``previews.default_cache_dir()``. ``undone_dir``: where restoring an
+    apply puts what it takes out of the library, by default ``apply.default_undone_dir()``.
 
     ``docs`` turns on Swagger UI at ``/docs``. It loads its scripts from cdn.jsdelivr.net into the server's origin,
     so it is off unless asked for. ReDoc is always off.
@@ -352,11 +357,14 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
     preview_cache = previews.PreviewCache(preview_dir or previews.default_cache_dir())
     broker = Broker()
     runner = JobRunner(root, db_path, workers, broker, preview_cache.cache_dir)
+    undone = undone_dir or applies.default_undone_dir()
+    apply_lock = threading.Lock()       # one apply or restore at a time: each plans from the files as they are
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         store = Store(db_path)
         store.fail_unfinished_jobs()
+        applies.fail_interrupted(store)
         store.commit()
         store.close()
         runner.start()
@@ -480,6 +488,57 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
             "sharpness": sharp,                 # histogram data
             "groups": [{"group_id": gid, "shots": shots} for gid, shots in groups.items()],
         }
+
+    @app.get("/api/events/{event_id}/apply-plan")
+    def apply_plan(event_id: int, store: Db) -> dict[str, Any]:
+        """Dry run of Toteuta: the rejected shots to move, the sidecars to create and update (reviewed shots only),
+        how many shots have no decision, and the conflicts. Its ``confirm_token`` confirms exactly this plan."""
+        try:
+            return applies.plan_json(applies.build_plan(store, root, event_id), root)
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from None
+
+    @app.post("/api/events/{event_id}/apply")
+    def apply_event(event_id: int, body: ApplyRequest, store: Db) -> dict[str, Any]:
+        """Toteuta: carry out the plan the ``confirm_token`` of ``apply-plan`` confirms. ``409`` when the plan has
+        changed since (or has conflicts, or an analysis of the event is under way); nothing is changed then."""
+        with apply_lock:
+            try:
+                plan = applies.build_plan(store, root, event_id)
+            except LookupError as e:
+                raise HTTPException(404, str(e)) from None
+            if store.db.execute("SELECT 1 FROM jobs WHERE status IN ('queued', 'running') AND scope IN ('all', ?)",
+                                (str(event_id),)).fetchone():
+                raise HTTPException(409, "tapahtuman analyysi on kesken; toteuta, kun se on valmis")
+            if body.confirm_token != plan.token:
+                raise HTTPException(409, "suunnitelma on muuttunut vahvistuksen jälkeen; tarkista se uudelleen")
+            try:
+                apply_id = applies.apply(store, root, plan)
+            except applies.ApplyConflict as e:
+                raise HTTPException(409, str(e)) from None
+            except applies.ApplyFailed as e:
+                raise HTTPException(500, f"toteutus keskeytyi ({e}); palauta se toteutushistoriasta") from None
+            return {"apply": applies.apply_info(store, root, apply_id)}
+
+    @app.get("/api/events/{event_id}/applies")
+    def event_applies(event_id: int, store: Db) -> dict[str, Any]:
+        if store.db.execute("SELECT 1 FROM events WHERE id = ?", (event_id,)).fetchone() is None:
+            raise HTTPException(404, "tapahtumaa ei ole")
+        return {"applies": applies.event_applies(store, root, event_id)}
+
+    @app.post("/api/applies/{apply_id}/restore")
+    def restore_apply(apply_id: int, store: Db) -> dict[str, Any]:
+        """Palauta karsitut: reverse an apply. Nothing is deleted; see ``apply.restore``."""
+        with apply_lock:
+            try:
+                result = applies.restore(store, root, apply_id, undone)
+            except LookupError as e:
+                raise HTTPException(404, str(e)) from None
+            except applies.ApplyConflict as e:
+                raise HTTPException(409, str(e)) from None
+            except applies.ApplyFailed as e:
+                raise HTTPException(500, str(e)) from None
+            return {"apply": applies.apply_info(store, root, apply_id), **result}
 
     @app.get("/api/shots/{shot_id}")
     def shot(shot_id: int, store: Db) -> dict[str, Any]:
