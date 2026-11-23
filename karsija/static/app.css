@@ -57,8 +57,9 @@ table.events { width: 100%; border-collapse: collapse; }
 .events .when { font-size: .8rem; }
 .events .action { text-align: right; width: 14rem; }
 /* in a row the label goes under a shorter bar, so the column keeps its width when a job starts */
-.events .progress { display: flex; flex-direction: column; align-items: flex-end; gap: .2rem; }
+.events .progress { display: flex; flex-direction: column; align-items: flex-end; gap: .2rem; white-space: normal; }
 .events progress { width: 100%; }
+.events .action .error { text-align: left; overflow-wrap: anywhere; font-size: .85rem; margin-top: .2rem; }
 
 .badge {
   display: inline-block; font-size: .8rem; font-weight: 600; padding: .05rem .45rem; border-radius: 4px;
@@ -91,8 +92,9 @@ progress:indeterminate::-moz-progress-bar { background: transparent; }
 .verdict-blurry { color: var(--blurry); border-color: var(--blurry); }
 .verdict-error { color: var(--error); border-color: var(--error); }
 
-/* narrow screens: one card per event, every count with its label */
-@media (max-width: 40rem) {
+/* narrow screens: one card per event, every count with its label. Below 52rem the six columns leave the name too
+   little room. */
+@media (max-width: 52rem) {
   .page { padding: 1rem; }
   .year { padding: .2rem .6rem .6rem; }
   .events thead { display: none; }
@@ -103,8 +105,18 @@ progress:indeterminate::-moz-progress-bar { background: transparent; }
   }
   .events td { border: 0; padding: 0; }
   .events .name, .events .action, .events .unanalysed-cell { grid-column: 1 / -1; }
-  .events .num { text-align: left; }
-  .events .num::before { content: attr(data-label); display: block; font-size: .75rem; color: var(--muted); }
+  .events .num { text-align: left; white-space: normal; }
+  .events .num::before {
+    content: attr(data-label); display: block; font-size: .75rem; color: var(--muted); overflow-wrap: anywhere;
+  }
   .events .action { width: auto; text-align: left; }
   .events .progress { align-items: stretch; }
+  .top .actions { width: 100%; }
+  .top .progress { display: flex; flex-direction: column; align-items: stretch; gap: .2rem; white-space: normal; }
+  .top progress { width: 100%; }
+}
+
+/* phones: the counts in a 2 × 2 grid */
+@media (max-width: 24rem) {
+  .events tr { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

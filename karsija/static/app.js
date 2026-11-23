@@ -59,15 +59,27 @@ function useJobs() {
   }, []);
 
   const opened = useRef(0);               // times the event stream has (re)connected
+  const lost = useRef(false);             // the stream (or the server) was unreachable since the last connection
+  const active = useRef(state.active);
+  active.current = state.active;
   useEffect(() => followEvents({
     onJob: update,
     onOpen: () => {
-      // on a reconnect jobs may have ended while the stream was down: forget them, the stream lists the ones still
-      // pending, and reload the data. The first connection needs neither: the views have just loaded theirs.
-      if (opened.current++ > 0) setState((s) => ({ ...s, active: {}, version: s.version + 1 }));
+      const reload = opened.current++ > 0 || lost.current;
+      lost.current = false;
       setState((s) => ({ ...s, online: true }));
+      // The first connection needs nothing: the views have just loaded their data. After a break, jobs may have
+      // ended unseen (a server restart fails them): ask the server about each one, the stream lists those still
+      // pending, and reload the data.
+      if (!reload) return;
+      const ids = Object.keys(active.current);
+      setState((s) => ({ ...s, active: {}, version: s.version + 1 }));
+      for (const id of ids) api(`/jobs/${id}`).then(update, () => {});
     },
-    onError: () => setState((s) => ({ ...s, online: false })),
+    onError: () => {
+      lost.current = true;
+      setState((s) => ({ ...s, online: false }));
+    },
   }), [update]);
 
   const start = useCallback(async (scope) => {

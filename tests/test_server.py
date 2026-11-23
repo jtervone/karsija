@@ -760,3 +760,16 @@ def test_job_for_a_deleted_event_fails_clearly(own: Server) -> None:
     job = store.job(job_id)
     store.close()
     assert job is not None and (job["status"], job["error"]) == ("failed", "tapahtumaa ei ole")
+
+
+def test_failed_analysis_keeps_analysed_at(own: Server, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The UI tells analysed events from the others by analysed_at: a failed job must not touch it."""
+    def boom(*args: Any) -> None:
+        raise RuntimeError("rikki")
+
+    (own.root / "2025" / "2025-08-01-empty").mkdir()
+    before = {ev["name"]: ev["analysed_at"] for ev in own.client.get("/api/library").json()["years"][0]["events"]}
+    monkeypatch.setattr(server_mod, "group_and_judge", boom)
+    assert analyse(own, "all")["status"] == "failed"
+    after = {ev["name"]: ev["analysed_at"] for ev in own.client.get("/api/library").json()["years"][0]["events"]}
+    assert after == before and before["2025-08-01-empty"] is None

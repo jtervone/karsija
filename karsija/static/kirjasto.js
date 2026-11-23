@@ -58,7 +58,8 @@ function EventRow({ ev, job, failed, allBusy, start }) {
     <${Counts} ev=${ev} />
     <td class="action">
       ${action}
-      ${failed && !job && html`<div class="error">Analyysi epäonnistui: ${failed.error}</div>`}
+      ${failed && !job && !(ev.analysed_at > failed.finished)
+        && html`<div class="error">Analyysi epäonnistui: ${failed.error}</div>`}
     </td>
   </tr>`;
 }
@@ -88,7 +89,7 @@ export function Kirjasto({ jobs }) {
       </div>
       <div class="actions">
         ${allJob ? html`<${JobProgress} job=${allJob} />`
-                 : html`<button class="primary" onClick=${() => start('all')}>Analysoi kaikki</button>`}
+          : events.length > 0 && html`<button class="primary" onClick=${() => start('all')}>Analysoi kaikki</button>`}
       </div>
     </header>
     ${startError && html`<p class="error">Analyysiä ei voi aloittaa: ${startError}</p>`}
@@ -96,11 +97,12 @@ export function Kirjasto({ jobs }) {
     ${error && html`<p class="error">Kirjastoa ei voi ladata: ${error}</p>`}
     ${!data && !error && html`<p class="muted">Ladataan…</p>`}
     ${data && events.length === 0 && html`<p class="muted">
-      Kirjastossa ei ole tapahtumakansioita. Kuvien pitää olla kansioissa <code>VVVV/VVVV-KK-PP-nimi</code>.</p>`}
+      Kirjastossa ei ole tapahtumakansioita. Kuvien pitää olla kansioissa <code>VVVV/VVVV-KK-PP</code>, joiden
+      nimen perään voi lisätä tapahtuman nimen (<code>2025/2025-06-14-juhannus</code>).</p>`}
     ${events.length > 0 && html`<p class="summary muted">
-      ${fmt(events.length)} tapahtumaa, ${fmt(analysed.length)} analysoitu ·
-      ${fmt(sum('shots'))} kuvaa · <span class="candidates">${fmt(sum('candidates'))} karsittavaa</span> ·
-      ${fmt(sum('unreviewed'))} tarkastamatta</p>`}
+      ${fmt(events.length)} tapahtumaa, ${fmt(analysed.length)} analysoitu${analysed.length > 0 && html`.
+      Analysoiduissa ${fmt(sum('shots'))} kuvaa · <span class="candidates">${fmt(sum('candidates'))} karsittavaa</span>
+      · ${fmt(sum('unreviewed'))} tarkastamatta`}.</p>`}
     ${data && data.years.map((y) => html`<section class="year" key=${y.year}>
       <h2>${y.year}</h2>
       <table class="events">

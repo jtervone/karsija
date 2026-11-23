@@ -378,8 +378,8 @@ class Store:
     def fail_unfinished_jobs(self) -> None:
         """Mark jobs of a previous server run that never finished."""
         self.db.execute(
-            "UPDATE jobs SET status = 'failed', error = 'keskeytyi', finished = ? "
-            "WHERE status IN ('queued', 'running')",
+            "UPDATE jobs SET status = 'failed', error = 'keskeytyi: palvelin pysäytettiin kesken analyysin', "
+            "finished = ? WHERE status IN ('queued', 'running')",
             (time.time(),),
         )
 

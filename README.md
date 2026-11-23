@@ -44,11 +44,15 @@ The page it opens is **Kirjasto**: the event folders by year, with each event's 
 analysed yet are marked *Ei analysoitu*; the others show when they were last analysed. Analysis does not start on
 its own: **Analysoi** analyses one event (**Analysoi uudelleen** once it has been analysed; unchanged shots come
 from the cache, so a second run mostly regroups), **Analysoi kaikki** the whole library, and a progress bar follows
-it; the counts update when it finishes. If an analysis fails, its error stays on the event's row (or under
-**Analysoi kaikki**) until it is started again; the page forgets it on reload. While the server cannot be reached,
-a banner says so, and the page reconnects and reloads the counts by itself. The
-event, loupe and compare views (`#/event/<id>`, `#/event/<id>/loupe/<shot>`, `#/event/<id>/compare/<group>`) come
-later.
+it; the counts update when it finishes. While **Analysoi kaikki** runs, the events show *mukana kirjaston
+analyysissä* instead of their own button: they are part of that analysis and cannot be started on their own
+meanwhile.
+
+If an analysis fails, its error stays on the event's row (or under **Analysoi kaikki**) until the event is analysed
+again; the page forgets it on reload. An analysis cut short by stopping the server fails with *keskeytyi*. While
+the server cannot be reached, a banner says so, and the page reconnects, shows the analyses that ended meanwhile
+and reloads the counts by itself. The event, loupe and compare views (`#/event/<id>`,
+`#/event/<id>/loupe/<shot>`, `#/event/<id>/compare/<group>`) come later.
 
 The UI needs no network: Preact and htm are vendored in `karsija/static/vendor/` (versions and licences in its
 README), there is no build step, and the page's Content-Security-Policy lets it load nothing from other sites.
@@ -61,6 +65,10 @@ The server can also be used through its JSON API. With `--docs`, the API is list
 curl -X POST localhost:8765/api/analyse -H 'Content-Type: application/json' -d '{"scope": "all"}'
 curl localhost:8765/api/library                  # events with shot counts and analysed_at; an event id also works as "scope"
 ```
+
+`analysed_at` (in `/api/library` and in `event` of `/api/events/{id}`) is when the last server analysis that
+covered the event finished, in Unix seconds: `null` if none has, `0` if one has but its time is not known (events
+analysed before schema 3, see below). Only a job that finishes sets it; a failed one leaves the old value.
 
 Progress is pushed over server-sent events (`/api/events/stream`) and can be polled at `/api/jobs/{id}`. A shot
 is analysed only once as long as its files do not change. The server has its own database, so the first analysis
@@ -124,8 +132,8 @@ The server never writes into the library. By default its state database lives at
 SHA-256 of the resolved library root, so every library gets its own database. Use `--db` to choose another file.
 This database is separate from the `scan` command's `karsija.sqlite`. Upgrading karsija upgrades it too (now
 schema 3), after which an older karsija can no longer open it. Events analysed before schema 3 count as analysed,
-at the end of the last finished analysis job that covered them (with no time shown when there is none). Previews go to `~/.cache/karsija/previews/`
-(see above; `--previews` chooses another folder). Only image files inside the library root (and previews made from
+at the end of the last finished analysis job that covered them (with no time shown when there is none). Previews
+go to `~/.cache/karsija/previews/` (see above; `--previews` chooses another folder). Only image files inside the library root (and previews made from
 them) are served; `..`, absolute paths and symlinks that lead outside it are rejected. Shots whose files have
 disappeared are left out of the event; if they come back, their decisions are still there.
 
