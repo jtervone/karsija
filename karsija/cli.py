@@ -1,13 +1,16 @@
-"""Command line interface: `karsija scan ROOT`."""
+"""Command line interface: `karsija scan ROOT`, `karsija serve ROOT`."""
 
 from __future__ import annotations
 
 import argparse
 import concurrent.futures as cf
 import csv
+import errno
 import html
+import ipaddress
 import os
 import re
+import socket
 import sys
 import time
 from datetime import datetime
@@ -18,7 +21,7 @@ import cv2
 from karsija.actions import REJECT_DIR, move_rejects, write_xmp
 from karsija.analysis import Shot, analyse_file, group_shots, judge
 from karsija.library import JPEG_EXT, collect_shots, find_event_dirs, load_image
-from karsija.store import Store
+from karsija.store import Store, default_db_path
 
 
 # --------------------------------------------------------------------------- #
@@ -133,6 +136,10 @@ SCAN_EPILOG = ("Mitään ei poisteta. --write-xmp kirjoittaa XMP-sivutiedoston v
                f"--move siirtää karsitut tapahtumakansion {REJECT_DIR}-alikansioon, josta ne voi siirtää takaisin.")
 
 
+SERVE_EPILOG = ("Palvelin ei kirjoita kirjastoon mitään: päätökset ja analyysit tallentuvat tietokantaan, "
+                "oletuksena kirjaston ulkopuolelle (ks. --db).")
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="karsija", description="Kuvien karsinta-apu.")
     sub = ap.add_subparsers(dest="command", required=True)
@@ -156,12 +163,30 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--write-xmp", action="store_true", help="kirjoita arvio XMP-sivutiedostoon (ei ylikirjoita)")
     sc.add_argument("--move", default="", help="siirrä _karsitut-alikansioon: blurry,similar")
     sc.set_defaults(func=scan)
+
+    sv = sub.add_parser("serve", help="käynnistä selainkäyttöliittymän palvelin",
+                        description="Käynnistä karsijan palvelin ja avaa se selaimessa.", epilog=SERVE_EPILOG)
+    sv.add_argument("root", type=Path, help="kuvakirjaston juuri (sisältää YYYY-kansiot)")
+    sv.add_argument("--host", default="127.0.0.1", help="osoite jota kuunnellaan (oletus: vain tämä kone)")
+    sv.add_argument("--port", type=int, default=8765, help="portti (oletus: 8765)")
+    sv.add_argument("--no-browser", action="store_true", help="älä avaa selainta")
+    sv.add_argument("--workers", type=int, default=os.cpu_count() or 4,
+                    help="rinnakkaisten analyysiprosessien määrä (oletus: CPU-ytimien määrä)")
+    sv.add_argument("--db", type=Path, default=None,
+                    help="tietokanta (oletus: $XDG_DATA_HOME/karsija/<juuren tiiviste>.sqlite, "
+                         "ilman muuttujaa ~/.local/share/karsija/...)")
+    sv.add_argument("--allow-host", action="append", default=[], metavar="NIMI",
+                    help="hyväksy myös tämä palvelimen nimi selaimen osoitteessa (esim. kone.local); "
+                         "voi antaa useasti")
+    sv.add_argument("--docs", action="store_true",
+                    help="rajapinnan kokeilusivu osoitteeseen /docs (lataa Swagger UI:n cdn.jsdelivr.net:stä)")
+    sv.set_defaults(func=serve)
     return ap
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    if argv and not argv[0].startswith("-") and argv[0] != "scan" and Path(argv[0]).expanduser().is_dir():
+    if argv and not argv[0].startswith("-") and argv[0] not in ("scan", "serve") and Path(argv[0]).expanduser().is_dir():
         # the old script took the library root as its first argument
         print(f"Käytä: karsija scan {argv[0]} ...", file=sys.stderr)
         return 2
@@ -224,6 +249,94 @@ def scan(args: argparse.Namespace) -> int:
     if move_kinds:
         print(f"Siirretty {moved} kuvaa {REJECT_DIR}-alikansioihin")
     print(f"Raportti: {html_path.resolve()}\nCSV:      {csv_path.resolve()}")
+    return 0
+
+
+def is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def bracket(host: str) -> str:
+    """IPv6 addresses appear in brackets in a Host header."""
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
+def own_host_names() -> list[str]:
+    """Names and addresses this machine is reached by, for a server listening on every address."""
+    names = [socket.gethostname(), socket.getfqdn()]
+    names += [f"{n}.local" for n in names[:1] if "." not in n]          # mDNS
+    try:
+        names += [str(a[4][0]) for a in socket.getaddrinfo(socket.gethostname(), None)]
+    except OSError:
+        pass
+    for family, probe in ((socket.AF_INET, "192.0.2.1"), (socket.AF_INET6, "2001:db8::1")):
+        try:        # the address of the default route; connect() on UDP sends nothing
+            with socket.socket(family, socket.SOCK_DGRAM) as s:
+                s.connect((probe, 9))
+                names.append(str(s.getsockname()[0]))
+        except OSError:
+            pass
+    return [bracket(n.split("%")[0]) for n in names if n]
+
+
+def bind_error(host: str, port: int) -> str:
+    """Why the server could not listen on host:port, or "" if it can. Checked before uvicorn starts, which would
+    otherwise fail with its own English log line after the address has been printed."""
+    try:
+        family = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[0][0]
+        with socket.create_server((host, port), family=family):
+            pass
+    except OSError as e:
+        if e.errno == errno.EADDRINUSE:
+            return f"Portti {port} on jo käytössä; valitse toinen --port."
+        return f"Osoitteessa {host}:{port} ei voi kuunnella: {e.strerror or e}"
+    return ""
+
+
+def serve(args: argparse.Namespace) -> int:
+    import threading
+    import webbrowser
+
+    import uvicorn
+
+    from karsija.server import LOOPBACK_HOSTS, create_app
+
+    root = args.root.expanduser().resolve()
+    if not root.is_dir():
+        print(f"Kansiota ei löydy: {root}", file=sys.stderr)
+        return 1
+    if not find_event_dirs(root):
+        print("VAROITUS: kansiossa ei ole YYYY/YYYY-MM-DD* -kansioita; anna kirjaston juuri.", file=sys.stderr)
+    db_path = (args.db.expanduser() if args.db else default_db_path(root)).resolve()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    if not is_loopback(args.host):
+        print(f"VAROITUS: palvelin kuuntelee osoitteessa {args.host}. Kuka tahansa verkossa voi selata kirjastoa "
+              "ja tehdä päätöksiä; palvelimessa ei ole kirjautumista. Käytä vain luotetussa verkossa.",
+              file=sys.stderr)
+    if error := bind_error(args.host, args.port):
+        print(error, file=sys.stderr)
+        return 1
+    host = f"[{args.host}]" if ":" in args.host else args.host
+    any_address = args.host in ("0.0.0.0", "::")
+    url = f"http://{'127.0.0.1' if any_address else host}:{args.port}/"
+    print(f"Kirjasto:     {root}\nTietokanta:   {db_path}\nOsoite:       {url}"
+          + ("  (kuuntelee kaikissa verkko-osoitteissa)" if any_address else ""), flush=True)
+
+    def ready() -> None:
+        if not args.no_browser:
+            threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
+
+    # requests must name this server in their Host header (DNS rebinding)
+    allowed_hosts = [*LOOPBACK_HOSTS, *(own_host_names() if any_address else [host]),
+                     *(bracket(h) for h in args.allow_host)]
+    app = create_app(root, db_path, workers=max(1, args.workers), on_ready=ready,
+                     allowed_hosts=list(dict.fromkeys(h.lower() for h in allowed_hosts)), docs=args.docs)
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0
 
 

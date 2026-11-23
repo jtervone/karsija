@@ -7,11 +7,20 @@ from typing import Any
 
 import numpy as np
 import pytest
-from conftest import EVENT, T0, Library, texture
+from conftest import EVENT, EXIF_META, T0, Library, texture
 from PIL import Image
 
 from karsija import library as library_mod
-from karsija.library import capture_time, collect_shots, find_event_dirs, load_image
+from karsija.library import (
+    UnsafePath,
+    capture_time,
+    collect_shots,
+    exif_metadata,
+    find_event_dirs,
+    load_image,
+    read_exif,
+    safe_path,
+)
 
 
 def test_find_event_dirs(library: Library) -> None:
@@ -105,3 +114,43 @@ def test_load_image_jpeg(library: Library) -> None:
     bgr, pil = load_image(Path(library.path("sharp.jpg")))
     assert bgr.shape == (600, 800, 3)
     assert pil is not None
+
+
+# --------------------------------------------------------------------------- #
+# EXIF and safe paths
+# --------------------------------------------------------------------------- #
+def test_exif_metadata(library: Library) -> None:
+    with Image.open(library.path("sharp.jpg")) as img:
+        assert exif_metadata(img) == {**EXIF_META, "datetime_original": "2025:06:01 12:00:00"}
+    assert exif_metadata(None) == {}
+    assert exif_metadata(Image.new("RGB", (4, 4))) == {}
+
+
+def test_exif_camera_name(tmp_path: Path) -> None:
+    exif = Image.Exif()
+    exif[271], exif[272] = "Canon", "EOS R5"
+    Image.new("RGB", (4, 4)).save(tmp_path / "a.jpg", exif=exif)
+    with Image.open(tmp_path / "a.jpg") as img:
+        assert exif_metadata(img) == {"camera": "Canon EOS R5"}
+
+
+def test_read_exif_prefers_the_jpeg(library: Library) -> None:
+    raw, jpg = str(library.path("DSC_0100.NEF")), str(library.path("DSC_0100.JPG"))
+    assert read_exif(raw, [jpg, raw])["iso"] == 400
+    assert read_exif(raw, [raw]) == {}             # placeholder NEF: unreadable, no metadata
+
+
+def test_safe_path(tmp_path: Path) -> None:
+    root = tmp_path / "lib"
+    (root / "2025").mkdir(parents=True)
+    (tmp_path / "out.jpg").write_bytes(b"x")
+    (root / "2025" / "link.jpg").symlink_to(tmp_path / "out.jpg")
+    (root / "2025" / "inner.jpg").symlink_to(root / "2025" / "a.jpg")
+    assert safe_path(root, "2025/a.jpg") == root.resolve() / "2025" / "a.jpg"
+    assert safe_path(root, "2025/../2025/./a.jpg") == root.resolve() / "2025" / "a.jpg"
+    assert safe_path(root, "2025/inner.jpg") == root.resolve() / "2025" / "a.jpg"
+    assert safe_path(root, ".") == root.resolve()
+    for bad in ("", "..", "../out.jpg", "2025/../../out.jpg", "/etc/passwd", str(root / "2025"), "2025/link.jpg",
+                "a\x00b"):
+        with pytest.raises(UnsafePath):
+            safe_path(root, bad)

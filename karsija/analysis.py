@@ -4,13 +4,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
 
-from karsija.library import JPEG_EXT, capture_time, load_image
+from karsija.library import JPEG_EXT, capture_time, exif_metadata, load_image
 
 GRID = 8                      # sharpness tiles per axis
+MIN_HIST = 0.9                # colour histogram correlation that lets a looser dHash match group
+
+# Grouping and judging thresholds; the `settings` table overrides them
+DEFAULT_SETTINGS: dict[str, float] = {
+    "gap": 3.0,               # max seconds between consecutive shots of a group
+    "hamming": 40,            # max dHash difference (0-256) of similar shots
+    "abs_blur": 10.0,         # sharpness below this = blurry
+    "rel_blur": 0.25,         # below this fraction of the event median = blurry
+    "sim_keep": 0.0,          # keep a group member whose sharpness >= this x the best (0 = only the best)
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -28,6 +39,7 @@ class Shot:
     dhash: str = ""
     hist: list[float] = field(default_factory=list)
     error: str = ""
+    exif: dict[str, Any] = field(default_factory=dict)   # see library.exif_metadata
     # filled in by analysis
     group: int = -1
     verdict: str = ""              # best | keep | similar | blurry | error
@@ -109,6 +121,7 @@ def analyse_file(primary: str, files: list[str]) -> Shot:
         bgr, pil = load_image(Path(src))
         gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
         shot.taken = capture_time(Path(src), pil)
+        shot.exif = exif_metadata(pil)
         shot.sharp, shot.sharp_global = sharpness(gray)
         shot.clip_hi = float((gray >= 250).mean())
         shot.clip_lo = float((gray <= 5).mean())
@@ -142,6 +155,13 @@ def group_shots(shots: list[Shot], max_gap: float, max_hamming: int, min_hist: f
         gid += 1
         s.group = gid
         prev = s
+
+
+def group_and_judge(shots: list[Shot], settings: dict[str, float]) -> None:
+    """Group and judge the shots of one event with the given thresholds (see DEFAULT_SETTINGS)."""
+    s = {**DEFAULT_SETTINGS, **settings}
+    group_shots(shots, s["gap"], int(s["hamming"]), MIN_HIST)
+    judge(shots, s["abs_blur"], s["rel_blur"], s["sim_keep"])
 
 
 def judge(shots: list[Shot], abs_blur: float, rel_blur: float, sim_keep: float) -> None:

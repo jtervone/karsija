@@ -5,9 +5,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
-from conftest import BURST, EXPECTED, Library
+from conftest import BURST, EXIF_META, EXPECTED, Library
 
-from karsija.analysis import Shot, analyse_file, dhash, group_shots, hamming, judge, sharpness
+from karsija.analysis import Shot, analyse_file, dhash, group_and_judge, group_shots, hamming, judge, sharpness
 from karsija.library import collect_shots, load_image
 
 DEFAULTS = {"abs_blur": 10.0, "rel_blur": 0.25, "sim_keep": 0.0}
@@ -66,6 +66,21 @@ def test_verdicts_on_synthetic_library(analysed: dict[str, Shot]) -> None:
         assert analysed[name].verdict == verdict, (name, analysed[name].sharp)
     burst = sorted(analysed[n].verdict for n in BURST)
     assert burst == ["best", "similar", "similar", "similar", "similar"]
+
+
+def test_group_and_judge_uses_defaults_and_overrides(analysed: dict[str, Shot]) -> None:
+    shots = list(analysed.values())
+    group_and_judge(shots, {})
+    assert {n: analysed[n].verdict for n in EXPECTED} == EXPECTED
+    group_and_judge(shots, {"gap": 0.1})              # burst frames are 0.3 s apart: no groups any more
+    assert len({s.group for s in shots}) == len(shots)
+    group_and_judge(shots, {"sim_keep": 0.5})
+    assert "keep" in {analysed[n].verdict for n in BURST}
+
+
+def test_analyse_file_reads_exif(analysed: dict[str, Shot]) -> None:
+    assert analysed["sharp.jpg"].exif == {**EXIF_META, "datetime_original": "2025:06:01 12:00:00"}
+    assert analysed["DSC_0100.NEF"].exif["camera"] == "NIKON Z 6"      # read from the JPEG of the pair
 
 
 # --------------------------------------------------------------------------- #

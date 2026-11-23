@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 import pytest
 from PIL import Image
+from PIL.TiffImagePlugin import IFDRational
 
 W, H = 800, 600                 # below ANALYSIS_EDGE, so images are analysed at full size
 T0 = datetime(2025, 6, 1, 12, 0, 0)
@@ -45,12 +46,23 @@ def shallow_dof(img: np.ndarray) -> np.ndarray:
 
 
 def save_jpeg(path: Path, gray: np.ndarray, taken: datetime) -> None:
-    """Write a JPEG with EXIF DateTimeOriginal and SubSecTimeOriginal."""
+    """Write a JPEG with EXIF capture time and the exposure fields of EXIF_META."""
     exif = Image.Exif()
+    exif[271], exif[272] = "NIKON CORPORATION", "NIKON Z 6"
     sub = exif.get_ifd(0x8769)
     sub[36867] = taken.strftime("%Y:%m:%d %H:%M:%S")
     sub[37521] = f"{taken.microsecond // 10000:02d}"
+    sub[33434] = IFDRational(1, 250)      # ExposureTime
+    sub[33437] = IFDRational(28, 10)      # FNumber
+    sub[34855] = 400                      # ISO
+    sub[37386] = IFDRational(50, 1)       # FocalLength
+    sub[42036] = "NIKKOR Z 50mm f/1.8 S"
     Image.fromarray(gray).convert("RGB").save(path, "JPEG", quality=95, exif=exif)
+
+
+# karsija.library.exif_metadata() of every synthetic JPEG, without datetime_original
+EXIF_META = {"camera": "NIKON Z 6", "exposure_time": 0.004, "f_number": 2.8, "iso": 400, "focal_length": 50.0,
+             "lens": "NIKKOR Z 50mm f/1.8 S"}
 
 
 @dataclass
