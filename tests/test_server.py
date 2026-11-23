@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import re
 import shutil
 import sqlite3
 import threading
@@ -172,6 +173,36 @@ def test_settings_defaults(server: Server) -> None:
 def test_static_index(server: Server) -> None:
     resp = server.client.get("/")
     assert resp.status_code == 200 and "karsija" in resp.text
+    assert '<script type="module" src="app.js">' in resp.text
+
+
+@pytest.mark.parametrize("path", ["/", "/app.js", "/app.css", "/vendor/preact.js"])
+def test_ui_loads_nothing_from_other_origins(server: Server, path: str) -> None:
+    resp = server.client.get(path)
+    assert resp.status_code == 200
+    csp = {d.split()[0]: d.split()[1:] for d in resp.headers["content-security-policy"].split("; ")}
+    assert csp["default-src"] == ["'self'"] and csp["img-src"] == ["'self'", "data:"]
+    assert resp.headers["cache-control"] == "no-cache"
+
+
+def test_ui_files_refer_to_no_other_origin() -> None:
+    """The page works offline: no file of the UI names a URL of another site (the policy would block it anyway)."""
+    files = [p for p in server_mod.STATIC_DIR.rglob("*") if p.suffix in (".html", ".js", ".css")]
+    assert {p.relative_to(server_mod.STATIC_DIR).as_posix() for p in files} >= {
+        "index.html", "app.js", "app.css", "vendor/preact.js", "vendor/hooks.js", "vendor/htm.js"}
+    for p in files:
+        text = p.read_text().replace("http://www.w3.org/", "")    # Preact's SVG and MathML namespace names
+        assert not re.search(r"""(?:https?:)?//[a-z0-9.-]+\.[a-z]{2,}/""", text, re.I), p
+        for target in re.findall(r"""(?:\bfrom|\bimport)\s*["']([^"']+)["']|(?:src|href)=["']([^"']+)["']""", text):
+            ref = next(t for t in target if t)
+            assert ref.startswith(("./", "data:", "#")) or not re.match(r"[a-z]+:|/", ref), (p, ref)
+            if not ref.startswith(("data:", "#")):
+                assert (p.parent / ref).is_file(), (p, ref)
+
+
+def test_ui_routes_have_no_server_side_paths(server: Server) -> None:
+    """The router works on the hash: the server only ever serves the page itself."""
+    assert server.client.get("/event/1").status_code == 404
 
 
 # --------------------------------------------------------------------------- #
@@ -676,6 +707,18 @@ def test_missing_shot_leaves_the_event(own: Server) -> None:
     assert back["auto_verdict"] in ("best", "similar") and back["group_id"] == group
 
 
+def test_library_shows_which_events_are_analysed(own: Server) -> None:
+    (own.root / "2025" / "2025-08-01-empty").mkdir()
+    events = {ev["name"]: ev for ev in own.client.get("/api/library").json()["years"][0]["events"]}
+    assert events[EVENT.name]["analysed_at"] == own.job["finished"]
+    assert events["2025-08-01-empty"]["analysed_at"] is None
+    assert events["2025-08-01-empty"]["shots"] == 0
+
+    job = analyse(own, "all")
+    events = {ev["name"]: ev for ev in own.client.get("/api/library").json()["years"][0]["events"]}
+    assert events[EVENT.name]["analysed_at"] == events["2025-08-01-empty"]["analysed_at"] == job["finished"]
+
+
 def test_next_analysis_uses_stored_settings(own: Server) -> None:
     store = Store(own.db)
     store.set_settings({"gap": 0.1})                              # burst frames are 0.3 s apart
@@ -717,3 +760,16 @@ def test_job_for_a_deleted_event_fails_clearly(own: Server) -> None:
     job = store.job(job_id)
     store.close()
     assert job is not None and (job["status"], job["error"]) == ("failed", "tapahtumaa ei ole")
+
+
+def test_failed_analysis_keeps_analysed_at(own: Server, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The UI tells analysed events from the others by analysed_at: a failed job must not touch it."""
+    def boom(*args: Any) -> None:
+        raise RuntimeError("rikki")
+
+    (own.root / "2025" / "2025-08-01-empty").mkdir()
+    before = {ev["name"]: ev["analysed_at"] for ev in own.client.get("/api/library").json()["years"][0]["events"]}
+    monkeypatch.setattr(server_mod, "group_and_judge", boom)
+    assert analyse(own, "all")["status"] == "failed"
+    after = {ev["name"]: ev["analysed_at"] for ev in own.client.get("/api/library").json()["years"][0]["events"]}
+    assert after == before and before["2025-08-01-empty"] is None

@@ -133,6 +133,7 @@ def write_csv(report_dir: Path, results: dict[Path, list[Shot]]) -> Path:
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
+SHUTDOWN_GRACE = 2          # seconds the server waits for open requests when stopped
 MOVE_KINDS = {"blurry", "similar"}
 SCAN_EPILOG = ("Mitään ei poisteta. --write-xmp kirjoittaa XMP-sivutiedoston vain, jos sellaista ei vielä ole. "
                f"--move siirtää karsitut tapahtumakansion {REJECT_DIR}-alikansioon, josta ne voi siirtää takaisin.")
@@ -361,7 +362,8 @@ def serve(args: argparse.Namespace) -> int:
     app = create_app(root, db_path, workers=max(1, args.workers), on_ready=ready,
                      allowed_hosts=list(dict.fromkeys(h.lower() for h in allowed_hosts)), docs=args.docs,
                      preview_dir=preview_dir)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    # an open page keeps its progress stream (SSE) open for good: without a time limit, Ctrl+C would wait for it
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning", timeout_graceful_shutdown=SHUTDOWN_GRACE)
     return 0
 
 

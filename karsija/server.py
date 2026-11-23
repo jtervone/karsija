@@ -37,6 +37,8 @@ KEEPALIVE = 15.0              # seconds between SSE comments on an idle stream
 PREVIEW_MAX_AGE = 365 * 24 * 3600   # seconds a browser may keep a preview of a versioned URL without asking again
 SUGGESTION = {"best": "keep", "keep": "keep", "similar": "reject", "blurry": "reject"}   # auto verdict -> decision
 
+UI_CSP = ("default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'; "
+          "frame-ancestors 'none'")
 _SHOT_COLS = ("id, event_id, key, files, sig, taken, sharp, sharp_global, clip_hi, clip_lo, error, group_id, "
               "auto_verdict, reason, user_verdict, rating, decided_at, state")
 
@@ -213,7 +215,9 @@ class JobRunner:
                 shots = store.event_shots(event_id, keys)
                 group_and_judge(shots, settings)
                 store.save_verdicts(shots)
-            self._publish(store, job_id, status="done", finished=time.time())
+            finished = time.time()
+            store.mark_analysed(on_disk, finished)
+            self._publish(store, job_id, status="done", finished=finished)
         except Exception as e:  # noqa: BLE001
             for f in futs:
                 f.cancel()
@@ -304,6 +308,19 @@ class RequestGuard:
             await self.app(scope, receive, send)
 
 
+class UIFiles(StaticFiles):
+    """The browser UI. Its policy lets the page load nothing from other origins, so it works offline and a
+    mistake cannot leak library data to another site. ``no-cache``: after an upgrade the browser revalidates the
+    modules (by ``ETag``) instead of mixing old and new ones."""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Content-Security-Policy"] = UI_CSP
+        response.headers["Cache-Control"] = "no-cache"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+
 # --------------------------------------------------------------------------- #
 # App
 # --------------------------------------------------------------------------- #
@@ -387,7 +404,7 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
         if not ids:
             return []
         rows = query(store, f"""
-            SELECT e.id, e.rel_path, e.year, e.name,
+            SELECT e.id, e.rel_path, e.year, e.name, e.analysed_at,
                    COUNT(s.id) AS shots,
                    COALESCE(SUM(s.auto_verdict IN ('blurry', 'similar')), 0) AS candidates,
                    COALESCE(SUM(s.user_verdict IS NOT NULL), 0) AS reviewed
@@ -568,5 +585,5 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
         return FileResponse(p, media_type=media_type, filename=p.name, content_disposition_type="inline",
                             headers={"X-Content-Type-Options": "nosniff"})
 
-    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+    app.mount("/", UIFiles(directory=STATIC_DIR, html=True), name="static")
     return app

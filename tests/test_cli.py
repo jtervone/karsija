@@ -126,6 +126,7 @@ def test_serve_defaults(library: Library, tmp_path: Path, monkeypatch: pytest.Mo
     assert main(["serve", str(library.root), "--no-browser"]) == 0
     (call,) = fake_uvicorn
     assert (call["host"], call["port"]) == ("127.0.0.1", 8765)
+    assert call["timeout_graceful_shutdown"] == 2              # an open page (SSE) does not keep Ctrl+C waiting
     assert call["app"].state.root == library.root.resolve()
     assert call["app"].state.db_path == default_db_path(library.root)
     assert call["app"].state.db_path.parent.is_dir()

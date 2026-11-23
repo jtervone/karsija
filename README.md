@@ -39,14 +39,36 @@ karsija serve ~/Kuvat --docs                     # also the API test page at /do
 karsija serve --help                             # --host, --allow-host, --workers, --db, --previews
 ```
 
-The browser UI is not there yet: the page it opens is a placeholder. Until it arrives, the server is used
-through its JSON API. With `--docs`, the API is listed and can be tried out at `/docs`. That page loads Swagger UI
-from cdn.jsdelivr.net, so it is off by default. Analysis does not start on its own:
+The page it opens is **Kirjasto**: the event folders by year, with each event's shot count, cull candidates
+(shots judged blurry or similar) and how many shots are reviewed and unreviewed. Events the server has not
+analysed yet are marked *Ei analysoitu*; the others show when they were last analysed. Analysis does not start on
+its own: **Analysoi** analyses one event (**Analysoi uudelleen** once it has been analysed; unchanged shots come
+from the cache, so a second run mostly regroups), **Analysoi kaikki** the whole library, and a progress bar follows
+it; the counts update when it finishes. While **Analysoi kaikki** runs, the events show *mukana kirjaston
+analyysissä* instead of their own button: they are part of that analysis and cannot be started on their own
+meanwhile.
+
+If an analysis fails, its error stays on the event's row (or under **Analysoi kaikki**) until the event is analysed
+again; the page forgets it on reload. An analysis cut short by stopping the server fails with *keskeytyi*. While
+the server cannot be reached, a banner says so, and the page reconnects, shows the analyses that ended meanwhile
+and reloads the counts by itself. The event, loupe and compare views (`#/event/<id>`,
+`#/event/<id>/loupe/<shot>`, `#/event/<id>/compare/<group>`) come later.
+
+The UI needs no network: Preact and htm are vendored in `karsija/static/vendor/` (versions and licences in its
+README), there is no build step, and the page's Content-Security-Policy lets it load nothing from other sites.
+Stopping the server (Ctrl+C) waits at most two seconds for open pages to let go.
+
+The server can also be used through its JSON API. With `--docs`, the API is listed and can be tried out at
+`/docs`. That page loads Swagger UI from cdn.jsdelivr.net, so it is off by default.
 
 ```sh
 curl -X POST localhost:8765/api/analyse -H 'Content-Type: application/json' -d '{"scope": "all"}'
-curl localhost:8765/api/library                  # events with shot counts; an event id also works as "scope"
+curl localhost:8765/api/library                  # events with shot counts and analysed_at; an event id also works as "scope"
 ```
+
+`analysed_at` (in `/api/library` and in `event` of `/api/events/{id}`) is when the last server analysis that
+covered the event finished, in Unix seconds: `null` if none has, `0` if one has but its time is not known (events
+analysed before schema 3, see below). Only a job that finishes sets it; a failed one leaves the old value.
 
 Progress is pushed over server-sent events (`/api/events/stream`) and can be polled at `/api/jobs/{id}`. A shot
 is analysed only once as long as its files do not change. The server has its own database, so the first analysis
@@ -108,8 +130,10 @@ library and record decisions. Writes from other web sites are refused, and reque
 The server never writes into the library. By default its state database lives at
 `~/.local/share/karsija/<hash>.sqlite` (`$XDG_DATA_HOME/karsija/` when that is set). `<hash>` is the first 16 hex digits of the
 SHA-256 of the resolved library root, so every library gets its own database. Use `--db` to choose another file.
-This database is separate from the `scan` command's `karsija.sqlite`. Previews go to `~/.cache/karsija/previews/`
-(see above; `--previews` chooses another folder). Only image files inside the library root (and previews made from
+This database is separate from the `scan` command's `karsija.sqlite`. Upgrading karsija upgrades it too (now
+schema 3), after which an older karsija can no longer open it. Events analysed before schema 3 count as analysed,
+at the end of the last finished analysis job that covered them (with no time shown when there is none). Previews
+go to `~/.cache/karsija/previews/` (see above; `--previews` chooses another folder). Only image files inside the library root (and previews made from
 them) are served; `..`, absolute paths and symlinks that lead outside it are rejected. Shots whose files have
 disappeared are left out of the event; if they come back, their decisions are still there.
 
@@ -127,7 +151,7 @@ Everything goes into the `--report` folder (default `./karsintaraportti`):
   when one of its files changes (path, size or modification time). It also stores the EXIF
   capture data of every shot (time, exposure, aperture, ISO, focal length, camera, lens).
   Shots cached by an older version get their EXIF read on the next run without being analysed again.
-  The first run with this version upgrades the database (schema 2); older versions of karsija can
+  The first run with this version upgrades the database (schema 3); older versions of karsija can
   no longer open it after that.
 
 The first run after upgrading imports the analyses from the old script's `cache.sqlite`;

@@ -1,0 +1,122 @@
+/* Dark theme; the verdict colours are those of the old HTML report. */
+:root {
+  --bg: #16181c;
+  --panel: #1e2126;
+  --panel-hi: #23272e;
+  --line: #3a4150;
+  --text: #ddd;
+  --muted: #8b929e;
+  --link: #8ab4f8;
+  --best: #3fb950;
+  --keep: #4a5160;
+  --similar: #d29922;
+  --blurry: #f85149;
+  --error: #a371f7;
+}
+
+* { box-sizing: border-box; }
+body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+h1 { margin: 0; font-size: 1.6rem; }
+h2 { margin: 1.5rem 0 .5rem; font-size: 1.2rem; }
+code { background: var(--panel-hi); padding: 0 .25em; border-radius: 3px; }
+
+.page { padding: 1.5rem; max-width: 72rem; margin: 0 auto; }
+.muted { color: var(--muted); }
+.error { color: var(--blurry); }
+.candidates { color: var(--similar); }
+.reviewed { color: var(--best); }
+.crumbs { margin: 0 0 .5rem; }
+
+.offline {
+  position: sticky; top: 0; z-index: 1; padding: .4rem 1.5rem; text-align: center;
+  background: var(--panel-hi); border-bottom: 2px solid var(--similar); color: var(--text);
+}
+
+.top { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; flex-wrap: wrap; }
+.top .root { font-size: .85rem; margin-top: .2rem; word-break: break-all; }
+.summary { margin: 1rem 0 0; }
+
+button {
+  font: inherit; color: var(--text); background: var(--panel-hi); border: 1px solid var(--line);
+  border-radius: 6px; padding: .3rem .8rem; cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--muted); }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: #1f6f3a; border-color: var(--best); color: #fff; }
+button.primary:hover:not(:disabled) { background: #1a5f32; }
+
+.year { background: var(--panel); border-radius: 8px; padding: .2rem 1rem .6rem; margin-top: 1rem; }
+.year h2 { margin-top: .6rem; }
+table.events { width: 100%; border-collapse: collapse; }
+.events th { text-align: left; font-weight: 500; color: var(--muted); font-size: .85rem; padding: .3rem .5rem; }
+.events td { padding: .45rem .5rem; border-top: 1px solid var(--line); vertical-align: middle; }
+.events .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.events .name { overflow-wrap: anywhere; }
+.events .when { font-size: .8rem; }
+.events .action { text-align: right; width: 14rem; }
+/* in a row the label goes under a shorter bar, so the column keeps its width when a job starts */
+.events .progress { display: flex; flex-direction: column; align-items: flex-end; gap: .2rem; white-space: normal; }
+.events progress { width: 100%; }
+.events .action .error { text-align: left; overflow-wrap: anywhere; font-size: .85rem; margin-top: .2rem; }
+
+.badge {
+  display: inline-block; font-size: .8rem; font-weight: 600; padding: .05rem .45rem; border-radius: 4px;
+  border: 1px solid currentColor;
+}
+.badge.unanalysed { color: var(--muted); }
+
+.progress { display: inline-flex; align-items: center; gap: .5rem; font-size: .85rem; white-space: nowrap; }
+progress {
+  appearance: none; width: 9rem; height: .5rem; border: 0; border-radius: 4px; background: var(--keep);
+  accent-color: var(--best);
+}
+progress::-webkit-progress-bar { background: var(--keep); border-radius: 4px; }
+progress::-webkit-progress-value { background: var(--best); border-radius: 4px; }
+progress::-moz-progress-bar { background: var(--best); border-radius: 4px; }
+/* styled bars lose the browser's own indeterminate animation: a moving stripe instead of an empty bar */
+progress:indeterminate {
+  background: linear-gradient(90deg, var(--keep) 0 40%, var(--best) 50%, var(--keep) 60% 100%) 0 0 / 300% 100%;
+  animation: indeterminate 1.2s linear infinite;
+}
+progress:indeterminate::-webkit-progress-bar { background: transparent; }
+progress:indeterminate::-moz-progress-bar { background: transparent; }
+@keyframes indeterminate { to { background-position: -150% 0; } }
+@media (prefers-reduced-motion: reduce) { progress:indeterminate { animation: none; } }
+
+/* Verdicts, for the review views */
+.verdict-best { color: var(--best); border-color: var(--best); }
+.verdict-keep { color: var(--muted); border-color: var(--keep); }
+.verdict-similar { color: var(--similar); border-color: var(--similar); }
+.verdict-blurry { color: var(--blurry); border-color: var(--blurry); }
+.verdict-error { color: var(--error); border-color: var(--error); }
+
+/* narrow screens: one card per event, every count with its label. Below 52rem the six columns leave the name too
+   little room. */
+@media (max-width: 52rem) {
+  .page { padding: 1rem; }
+  .year { padding: .2rem .6rem .6rem; }
+  .events thead { display: none; }
+  .events, .events tbody { display: block; }
+  .events tr {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .3rem .5rem;
+    border-top: 1px solid var(--line); padding: .5rem 0;
+  }
+  .events td { border: 0; padding: 0; }
+  .events .name, .events .action, .events .unanalysed-cell { grid-column: 1 / -1; }
+  .events .num { text-align: left; white-space: normal; }
+  .events .num::before {
+    content: attr(data-label); display: block; font-size: .75rem; color: var(--muted); overflow-wrap: anywhere;
+  }
+  .events .action { width: auto; text-align: left; }
+  .events .progress { align-items: stretch; }
+  .top .actions { width: 100%; }
+  .top .progress { display: flex; flex-direction: column; align-items: stretch; gap: .2rem; white-space: normal; }
+  .top progress { width: 100%; }
+}
+
+/* phones: the counts in a 2 × 2 grid */
+@media (max-width: 24rem) {
+  .events tr { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
