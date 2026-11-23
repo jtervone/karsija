@@ -1,4 +1,5 @@
 // Event views: the Tapahtuma grid, the loupe and the compare view, which share its keys and decisions.
+import { ApplyDialog, ApplyHistory } from './apply.js';
 import { Compare, MAX_PANES, bestFirst, comparable, comparableGroup, stepWithin } from './compare.js';
 import { Grid, groupBest } from './grid.js';
 import { ShortcutHelp, useKeys } from './keys.js';
@@ -87,15 +88,25 @@ function Counts({ ev, shots }) {
   </span>`;
 }
 
-export function EventView({ route, version }) {
+export function EventView({ route, version: jobsVersion }) {
   const eventId = route.event;
-  const review = useReview(eventId, version);
+  const [applied, setApplied] = useState(0);     // grows when an apply or restore may have changed the event
+  const version = jobsVersion + applied;
+  const review = useReview(eventId, version, applied);
   const { data, groups, shots } = review;
   const [filters, setFilters] = useState({ candidates: false, groups: false, unreviewed: false });
   const [cursor, setCursor] = useState(null);
   const [help, setHelp] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [applyRunning, setApplyRunning] = useState(false);
+  const changed = useCallback(() => setApplied((n) => n + 1), []);
+  const undoHint = useRef(false);        // the next Ctrl+Z explains that it does not undo the apply just made
+  const applyDone = useCallback((text) => {
+    undoHint.current = true;
+    review.notify(text);
+  }, [review.notify]);
 
-  useEffect(() => { setCursor(null); }, [eventId]);
+  useEffect(() => { setCursor(null); setApplying(false); undoHint.current = false; }, [eventId]);
 
   // What is shown changes when the filters change or the event reloads, not with each decision: a shot decided
   // under "Vain tarkastamattomat" stays until then, so the cursor does not jump away from it.
@@ -191,6 +202,12 @@ export function EventView({ route, version }) {
   };
 
   useKeys((action) => {
+    if (applying) {
+      // the dialog's buttons keep Space and Enter; nothing is decided under it
+      if (action.type !== 'back') return false;
+      if (!applyRunning) setApplying(false);       // a running apply's dialog waits for its answer
+      return true;
+    }
     if (help) {
       if (action.type === 'help' || action.type === 'back') setHelp(false);
       return true;
@@ -244,6 +261,13 @@ export function EventView({ route, version }) {
         break;
       }
       case 'undo': {
+        if (undoHint.current) {
+          // Ctrl+Z right after Toteuta would quietly undo an older decision, maybe in another event
+          undoHint.current = false;
+          review.notify('Toteutusta ei kumota Ctrl+Z:lla: palauta se Toteutukset-listasta kuvien alta. '
+            + 'Ctrl+Z uudelleen kumoaa aiemman päätöksen.');
+          break;
+        }
         const back = review.undo().find((id) => order.index.has(id));
         if (back == null) break;
         setCursor(back);
@@ -285,7 +309,12 @@ export function EventView({ route, version }) {
         ${FILTERS.map(([key, label, title]) => html`<label key=${key} title=${title}>
           <input type="checkbox" checked=${filters[key]} onChange=${() => toggle(key)} /> ${label}</label>`)}
       </div>`}
-      <button class="help-button" onClick=${() => setHelp(true)} title="Pikanäppäimet (?)">?</button>
+      <span class="toolbar-actions">
+        ${route.view === 'event' && ev && shots.size > 0 && html`<button
+          onClick=${() => setApplying(true)} title="Siirrä hylätyt kuvat karsittuihin ja kirjoita päätökset XMP:hen">
+          Toteuta</button>`}
+        <button class="help-button" onClick=${() => setHelp(true)} title="Pikanäppäimet (?)">?</button>
+      </span>
       ${(review.failure || review.notice) && html`<div class="notices">
         ${review.failure && html`<div class="notice error" role="alert">
           ${review.failure.text}${review.failure.count > 1 && ` (yhteensä ${review.failure.count} tallentamatta)`}
@@ -318,6 +347,10 @@ export function EventView({ route, version }) {
           best=${best.get(currentGroup.key)} position=${comparePosition(order, current, filters)} keys=${viewKeys}
           next=${nextGroup ? bestFirst(nextGroup.ids, shots).slice(0, MAX_PANES) : []} onPick=${setCursor}
           notify=${review.notify} />`)}
+    ${data && route.view === 'event' && html`<${ApplyHistory} eventId=${eventId} version=${version}
+      onChanged=${changed} />`}
     ${help && html`<${ShortcutHelp} onClose=${() => setHelp(false)} />`}
+    ${applying && ev && html`<${ApplyDialog} ev=${ev} settled=${review.settled} onClose=${() => setApplying(false)}
+      onChanged=${changed} onRunning=${setApplyRunning} onDone=${applyDone} />`}
   </main>`;
 }

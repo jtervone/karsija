@@ -4,7 +4,8 @@ The store doubles as the analysis cache: a shot is re-analysed only when its
 ``signature`` (path + size + mtime of every file) changes. The user-decision
 columns of ``shots`` (``user_verdict``, ``rating``, ``decided_at``) are written
 by the review server (``karsija serve``), every change also goes into
-``decisions`` so it can be undone. ``jobs`` holds the progress of background
+``decisions`` so it can be undone, until an apply carries the decision out in
+the library and takes its rows off (``forget_decisions``). ``jobs`` holds the progress of background
 analyses. The ``scan`` command writes neither. ``settings`` overrides
 ``analysis.DEFAULT_SETTINGS`` for the server; nothing writes it yet.
 
@@ -12,8 +13,12 @@ analyses. The ``scan`` command writes neither. ``settings`` overrides
 has but its time is not known (events judged before schema 3 without a finished job to tell).
 
 ``shots.state``: ``present`` (in its event folder), ``moved`` (moved into the
-reject folder by ``scan --move``) or ``missing`` (gone from the folder when the
-server last analysed the event; it keeps its decisions in case it comes back).
+reject folder by ``scan --move`` or by an apply of the server) or ``missing`` (gone
+from the folder when the server last analysed the event; it keeps its decisions in
+case it comes back).
+
+``applies`` and ``apply_ops`` log what the server's Toteuta did in the library, so
+Palauta karsitut can reverse it (see ``apply.py``).
 """
 
 from __future__ import annotations
@@ -94,6 +99,30 @@ CREATE TABLE IF NOT EXISTS jobs (
     error        TEXT NOT NULL DEFAULT '',
     started      REAL,
     finished     REAL
+);
+CREATE TABLE IF NOT EXISTS applies (           -- Toteuta: an event's decisions carried out in the library
+    id           INTEGER PRIMARY KEY,
+    event_id     INTEGER NOT NULL REFERENCES events(id),
+    status       TEXT NOT NULL CHECK (status IN ('running', 'done', 'failed', 'undone')),
+    created_dir  INTEGER NOT NULL DEFAULT 0,    -- the apply made the event's reject folder
+    log          TEXT NOT NULL DEFAULT '',      -- path of its JSON log
+    error        TEXT NOT NULL DEFAULT '',
+    started      REAL NOT NULL,
+    finished     REAL,
+    undone_at    REAL
+);
+CREATE TABLE IF NOT EXISTS apply_ops (         -- logged before they are carried out
+    id           INTEGER PRIMARY KEY,
+    apply_id     INTEGER NOT NULL REFERENCES applies(id),
+    seq          INTEGER NOT NULL,
+    kind         TEXT NOT NULL CHECK (kind IN ('xmp_create', 'xmp_update', 'move')),
+    shot_id      INTEGER REFERENCES shots(id),
+    src          TEXT NOT NULL,                 -- the sidecar written, or the file moved
+    dst          TEXT,                          -- move: where to
+    backup       TEXT,                          -- xmp_update: the sidecar's content before
+    new_sha256   TEXT,                          -- xmp ops: SHA-256 of the content written
+    done         INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (apply_id, seq)
 );
 """
 
@@ -353,6 +382,10 @@ class Store:
             )
         self.db.execute("DELETE FROM decisions WHERE batch = ?", (batch,))
         return batch, sorted({r[1] for r in rows})
+
+    def forget_decisions(self, shot_ids: Collection[int]) -> None:
+        """Take these shots' decisions off the undo stack (they stay in ``shots``)."""
+        self.db.executemany("DELETE FROM decisions WHERE shot_id = ?", [(i,) for i in shot_ids])
 
     # ----------------------------------------------------------------------- #
     # Jobs

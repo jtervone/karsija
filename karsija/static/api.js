@@ -1,7 +1,13 @@
 // JSON API of the server and its progress events.
 import { useEffect, useState } from './ui.js';
 
-export class ApiError extends Error {}
+export class ApiError extends Error {
+  /** `status`: the HTTP status, 0 when the server could not be reached. */
+  constructor(message, status = 0) {
+    super(message);
+    this.status = status;
+  }
+}
 
 /** `fetch` of `/api<path>`; `body` is sent as JSON. Throws an `ApiError` with the server's message. */
 export async function api(path, { method = 'GET', body } = {}) {
@@ -19,7 +25,7 @@ export async function api(path, { method = 'GET', body } = {}) {
   const data = await resp.json().catch(() => null);
   if (!resp.ok) {
     const detail = typeof data?.detail === 'string' ? data.detail : `virhe ${resp.status}`;
-    throw new ApiError(detail);
+    throw new ApiError(detail, resp.status);
   }
   return data;
 }

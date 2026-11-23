@@ -27,6 +27,7 @@ code { background: var(--panel-hi); padding: 0 .25em; border-radius: 3px; }
 .page { padding: 1.5rem; max-width: 72rem; margin: 0 auto; }
 .muted { color: var(--muted); }
 .error { color: var(--blurry); }
+.warn { color: var(--similar); }
 .candidates { color: var(--similar); }
 .reviewed { color: var(--best); }
 .crumbs { margin: 0 0 .5rem; }
@@ -105,7 +106,10 @@ progress:indeterminate::-moz-progress-bar { background: transparent; }
 .toolbar .counts { font-size: .9rem; }
 .filters { display: flex; flex-wrap: wrap; gap: .2rem .9rem; font-size: .9rem; }
 .filters label { white-space: nowrap; cursor: pointer; }
-.help-button { margin-left: auto; padding: .1rem .6rem; font-weight: 600; }
+/* Toteuta and ? at the right end, one group of equally tall buttons that wraps as one */
+.toolbar-actions { margin-left: auto; display: flex; gap: .4rem; }
+.toolbar-actions button { padding: .1rem .7rem; }
+.help-button { padding: .1rem .6rem; font-weight: 600; }
 /* under the toolbar, out of the flow, so a message does not move the grid */
 .notices {
   position: absolute; top: 100%; left: 0; right: 0; display: flex; flex-direction: column; gap: .2rem;
@@ -251,6 +255,29 @@ progress:indeterminate::-moz-progress-bar { background: transparent; }
 .help { max-width: 34rem; margin: auto; padding: .5rem 1.5rem 1rem; background: var(--panel); border-radius: 8px; }
 .help dl { display: grid; grid-template-columns: max-content 1fr; gap: .35rem 1rem; }
 .help dt, .help dd { margin: 0; }
+/* Toteuta: the confirmation and the history under the grid */
+.help.apply { width: 100%; max-width: 44rem; }   /* one width while the plan loads and details open */
+.apply .plan-summary { font-size: 1.05rem; }
+.apply .buttons { display: flex; gap: .6rem; margin-top: 1rem; }
+.apply details { margin: .4rem 0; }
+.paths { margin: .3rem 0; padding-left: 1.2rem; max-height: 14rem; overflow: auto; font-size: .85rem; }
+.paths code { overflow-wrap: anywhere; }
+.applies { margin-top: 2rem; border-top: 1px solid var(--line); max-width: 60rem; }
+.applies ul { list-style: none; padding: 0; margin: 0; }
+/* a grid, so the times, statuses and buttons of the rows line up in columns */
+.applies li {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content minmax(10rem, max-content);
+  align-items: baseline; gap: .2rem 1rem; padding: .45rem 0; border-bottom: 1px solid var(--line);
+}
+.applies li > .error, .applies .log { grid-column: 1 / -1; font-size: .8rem; overflow-wrap: anywhere; }
+.applies .action { text-align: right; }
+/* the restore question gets a line of its own instead of squeezing the row */
+.applies .action.confirming { grid-column: 1 / -1; text-align: left; }
+.restore-message { overflow-wrap: anywhere; }
+.applies .status { color: var(--muted); }
+.applies .apply-done .status { color: var(--best); }
+.applies .apply-failed .status { color: var(--blurry); }
+.applies .confirm { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: .5rem; }
 kbd {
   font: .85rem ui-monospace, monospace; padding: .05rem .35rem; border: 1px solid var(--line); border-bottom-width: 2px;
   border-radius: 4px; background: var(--panel-hi);
@@ -292,6 +319,11 @@ kbd {
 
 @media (max-width: 40rem) {
   .card { width: 9rem; contain-intrinsic-size: auto 9rem auto 10rem; }
+}
+
+@media (max-width: 40rem) {
+  .applies li { grid-template-columns: minmax(0, 1fr) max-content; }
+  .applies .action { grid-column: 1 / -1; text-align: left; }
 }
 
 /* phones: the counts in a 2 × 2 grid */
