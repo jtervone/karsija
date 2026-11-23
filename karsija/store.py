@@ -38,7 +38,7 @@ from karsija.analysis import DEFAULT_SETTINGS, Shot
 from karsija.library import EVENT_DIR_RE, JPEG_EXT, read_exif
 
 CACHE_VERSION = 4
-RAW_CACHE_VERSION = 5         # shots without a JPEG: 5 = analysed upright, turned by the RAW's own orientation
+RAW_CACHE_VERSION = 5  # shots without a JPEG: 5 = analysed upright, turned by the RAW's own orientation
 SCHEMA_VERSION = 3
 
 SCHEMA = """
@@ -128,7 +128,7 @@ CREATE TABLE IF NOT EXISTS apply_ops (         -- logged before they are carried
 
 _METRICS = ("taken", "sharp", "sharp_global", "clip_hi", "clip_lo", "dhash", "hist", "error")
 _JSON = {"hist", "exif"}
-UNSET: Any = object()          # decide(): leave the field as it is
+UNSET: Any = object()  # decide(): leave the field as it is
 
 
 def default_db_path(root: Path) -> Path:
@@ -162,7 +162,7 @@ class Store:
     def _upgrade_from_1(self) -> None:
         """Schema 2 allows ``state = 'missing'``. SQLite cannot change a CHECK constraint, so the table is rebuilt."""
         start = SCHEMA.index("CREATE TABLE IF NOT EXISTS shots")
-        create = SCHEMA[start:SCHEMA.index("CREATE INDEX IF NOT EXISTS shots_event")]
+        create = SCHEMA[start : SCHEMA.index("CREATE INDEX IF NOT EXISTS shots_event")]
         self.db.commit()
         self.db.execute("PRAGMA foreign_keys = OFF")
         self.db.executescript(f"""
@@ -177,11 +177,17 @@ class Store:
     def _upgrade_to_3(self) -> None:
         """Schema 3 records when an event was analysed. Events with judged shots count as analysed: at the end of
         the last finished job that covered them, or at 0 (time unknown) when no job says so."""
-        if "analysed_at" not in {r[1] for r in self.db.execute("PRAGMA table_info(events)")}:   # not half-upgraded
+        if "analysed_at" not in {r[1] for r in self.db.execute("PRAGMA table_info(events)")}:  # not half-upgraded
             self.db.execute("ALTER TABLE events ADD COLUMN analysed_at REAL")
         has_jobs = self.db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'jobs'").fetchone()
-        last_job = ("(SELECT MAX(finished) FROM jobs WHERE kind = 'analyse' AND status = 'done' "
-                    "AND scope IN ('all', CAST(events.id AS TEXT)))") if has_jobs else "NULL"
+        last_job = (
+            (
+                "(SELECT MAX(finished) FROM jobs WHERE kind = 'analyse' AND status = 'done' "
+                "AND scope IN ('all', CAST(events.id AS TEXT)))"
+            )
+            if has_jobs
+            else "NULL"
+        )
         self.db.execute(
             f"UPDATE events SET analysed_at = COALESCE({last_job}, 0) "
             "WHERE EXISTS (SELECT 1 FROM shots WHERE event_id = events.id AND auto_verdict IS NOT NULL)"
@@ -241,13 +247,18 @@ class Store:
         """Store the metrics of an analysed shot. User decisions on an existing row are kept."""
         cols = (*_METRICS, "exif")
         self.db.execute(
-            f"""INSERT INTO shots (event_id, key, files, sig, {', '.join(cols)})
-                VALUES (?, ?, ?, ?, {', '.join('?' * len(cols))})
+            f"""INSERT INTO shots (event_id, key, files, sig, {", ".join(cols)})
+                VALUES (?, ?, ?, ?, {", ".join("?" * len(cols))})
                 ON CONFLICT (key) DO UPDATE SET
                     event_id = excluded.event_id, files = excluded.files, sig = excluded.sig, state = 'present',
-                    {', '.join(f'{m} = excluded.{m}' for m in cols)}""",
-            (event_id, shot.key, json.dumps(shot.files), sig,
-             *(json.dumps(getattr(shot, c)) if c in _JSON else getattr(shot, c) for c in cols)),
+                    {", ".join(f"{m} = excluded.{m}" for m in cols)}""",
+            (
+                event_id,
+                shot.key,
+                json.dumps(shot.files),
+                sig,
+                *(json.dumps(getattr(shot, c)) if c in _JSON else getattr(shot, c) for c in cols),
+            ),
         )
 
     def event_shots(self, event_id: int, keys: set[str] | None = None) -> list[Shot]:
@@ -382,7 +393,7 @@ class Store:
             "WHERE batch = ? ORDER BY id DESC",
             (batch,),
         ).fetchall()
-        for _id, shot_id, verdict, rating, decided_at in rows:   # newest first, so the oldest state wins
+        for _id, shot_id, verdict, rating, decided_at in rows:  # newest first, so the oldest state wins
             self.db.execute(
                 "UPDATE shots SET user_verdict = ?, rating = ?, decided_at = ? WHERE id = ?",
                 (verdict, rating, decided_at, shot_id),

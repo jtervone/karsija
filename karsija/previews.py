@@ -19,7 +19,7 @@ from PIL import Image
 
 from karsija.library import JPEG_EXT, RawpyMissing, open_image
 
-SIZES = {"grid": 400, "full": 2560}       # long edge in pixels
+SIZES = {"grid": 400, "full": 2560}  # long edge in pixels
 QUALITY = {"grid": 80, "full": 88}
 
 # EXIF orientation -> transpose that makes the image upright (as PIL.ImageOps.exif_transpose)
@@ -78,8 +78,11 @@ def render(pil: Image.Image, size: str, turn: int | None = None) -> Image.Image:
     scale = edge / max(pil.size)
     out = pil.convert("RGB") if pil.mode != "RGB" else pil
     if scale < 1:
-        out = out.resize((max(1, round(pil.width * scale)), max(1, round(pil.height * scale))),
-                         Image.Resampling.LANCZOS, reducing_gap=3.0)
+        out = out.resize(
+            (max(1, round(pil.width * scale)), max(1, round(pil.height * scale))),
+            Image.Resampling.LANCZOS,
+            reducing_gap=3.0,
+        )
     if turn in _TRANSPOSE:
         out = out.transpose(_TRANSPOSE[turn])
     return out
@@ -103,7 +106,7 @@ def write_all(pil: Image.Image, cache_dir: Path, sig: str) -> None:
     resampled once: each smaller size is made from the one before it."""
     sizes = sorted(SIZES, key=SIZES.__getitem__, reverse=True)
     if all(preview_path(cache_dir, sig, size).exists() for size in sizes):
-        return                  # analysed again (a failed job, a new pool): nothing to resample
+        return  # analysed again (a failed job, a new pool): nothing to resample
     img, turn = pil, None
     for size in sizes:
         img, turn = render(img, size, turn), 1
@@ -144,6 +147,6 @@ class PreviewCache:
             if lock is None:
                 lock = self._locks[dest] = threading.Lock()
         with lock:
-            if dest.exists():          # made by the request that held the lock
+            if dest.exists():  # made by the request that held the lock
                 return dest
             return make(primary, files, self.cache_dir, sig, size)

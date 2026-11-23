@@ -28,25 +28,31 @@ JSON = {"Content-Type": "application/json"}
 
 # file -> content; image files are placeholders, nothing here reads them as images
 FILES = {
-    "a.jpg": b"jpeg a",                                   # reject, sidecars of both styles
+    "a.jpg": b"jpeg a",  # reject, sidecars of both styles
     "a.jpg.xmp": (FIXTURES / "darktable.nef.xmp").read_bytes(),
     "a.xmp": (FIXTURES / "digikam.xmp").read_bytes(),
-    "DSC_1.NEF": b"raw 1",                                # reject, RAW+JPEG with every sidecar
+    "DSC_1.NEF": b"raw 1",  # reject, RAW+JPEG with every sidecar
     "DSC_1.JPG": b"jpeg 1",
     "DSC_1.NEF.xmp": (FIXTURES / "darktable.nef.xmp").read_bytes(),
     "DSC_1.JPG.xmp": (FIXTURES / "darktable.nef.xmp").read_bytes(),
     "DSC_1.xmp": (FIXTURES / "digikam.xmp").read_bytes(),
-    "b.jpg": b"jpeg b",                                   # keep, no sidecar: one is created
-    "c.jpg": b"jpeg c",                                   # keep with 4 stars: its sidecar is updated
+    "b.jpg": b"jpeg b",  # keep, no sidecar: one is created
+    "c.jpg": b"jpeg c",  # keep with 4 stars: its sidecar is updated
     "c.xmp": (FIXTURES / "digikam.xmp").read_bytes(),
-    "d.jpg": b"jpeg d",                                   # no decision: never touched
+    "d.jpg": b"jpeg d",  # no decision: never touched
     "d.xmp": (FIXTURES / "digikam.xmp").read_bytes(),
-    "e.jpg": b"jpeg e",                                   # reject without a sidecar: created, then moved
-    "f.jpg": b"jpeg f",                                   # keep without stars, the user's own 2 stars stay
+    "e.jpg": b"jpeg e",  # reject without a sidecar: created, then moved
+    "f.jpg": b"jpeg f",  # keep without stars, the user's own 2 stars stay
     "f.xmp": (FIXTURES / "digikam.xmp").read_bytes(),
 }
-DECISIONS = {"a.jpg": ("reject", None), "DSC_1.NEF": ("reject", None), "b.jpg": ("keep", None),
-             "c.jpg": ("keep", 4), "e.jpg": ("reject", None), "f.jpg": ("keep", None)}
+DECISIONS = {
+    "a.jpg": ("reject", None),
+    "DSC_1.NEF": ("reject", None),
+    "b.jpg": ("keep", None),
+    "c.jpg": ("keep", 4),
+    "e.jpg": ("reject", None),
+    "f.jpg": ("keep", None),
+}
 
 
 @dataclass
@@ -77,8 +83,9 @@ def lib(tmp_path: Path) -> Iterator[Lib]:
         store.put(event_id, Shot(key=primary, files=files), "sig")
     store.db.execute("UPDATE shots SET auto_verdict = 'keep', group_id = 0")
     for name, (verdict, rating) in DECISIONS.items():
-        store.db.execute("UPDATE shots SET user_verdict = ?, rating = ? WHERE key = ?",
-                         (verdict, rating, str(event / name)))
+        store.db.execute(
+            "UPDATE shots SET user_verdict = ?, rating = ? WHERE key = ?", (verdict, rating, str(event / name))
+        )
     store.commit()
     yield Lib(root, event, store, event_id, tmp_path / "undone")
     store.close()
@@ -118,13 +125,14 @@ def test_plan_lists_moves_xmps_and_unreviewed_without_changing_anything(lib: Lib
         "e.jpg": ["e.jpg", "e.xmp"],
     }
     assert sorted(data["xmp_create"]) == [ev + "b.xmp", ev + "e.xmp"]
-    assert sorted(data["xmp_update"]) == sorted(ev + n for n in (
-        "a.jpg.xmp", "a.xmp", "DSC_1.NEF.xmp", "DSC_1.JPG.xmp", "DSC_1.xmp", "c.xmp"))
+    assert sorted(data["xmp_update"]) == sorted(
+        ev + n for n in ("a.jpg.xmp", "a.xmp", "DSC_1.NEF.xmp", "DSC_1.JPG.xmp", "DSC_1.xmp", "c.xmp")
+    )
     assert data["user_values"] == [ev + "f.xmp"]
     assert data["unreviewed"] == 1
     assert data["conflicts"] == []
     assert data["reject_dir"] == ev + REJECT_DIR
-    assert data["confirm_token"] == plan(lib).token          # the same files give the same token
+    assert data["confirm_token"] == plan(lib).token  # the same files give the same token
 
 
 def test_token_changes_with_the_decisions_and_the_files(lib: Lib) -> None:
@@ -145,21 +153,45 @@ def test_apply_and_restore_leave_the_event_as_it_was(lib: Lib) -> None:
     apply_id = applies.apply(lib.store, lib.root, plan(lib))
 
     rejects = lib.event / REJECT_DIR
-    assert sorted(p.name for p in rejects.iterdir()) == sorted([
-        "a.jpg", "a.jpg.xmp", "a.xmp", "DSC_1.JPG", "DSC_1.JPG.xmp", "DSC_1.NEF", "DSC_1.NEF.xmp", "DSC_1.xmp",
-        "e.jpg", "e.xmp", f"karsija-apply-{apply_id}.json"])
+    assert sorted(p.name for p in rejects.iterdir()) == sorted(
+        [
+            "a.jpg",
+            "a.jpg.xmp",
+            "a.xmp",
+            "DSC_1.JPG",
+            "DSC_1.JPG.xmp",
+            "DSC_1.NEF",
+            "DSC_1.NEF.xmp",
+            "DSC_1.xmp",
+            "e.jpg",
+            "e.xmp",
+            f"karsija-apply-{apply_id}.json",
+        ]
+    )
     for name in ("a.jpg.xmp", "a.xmp", "DSC_1.NEF.xmp", "DSC_1.JPG.xmp", "DSC_1.xmp", "e.xmp"):
         assert xmp(rejects / name) == ("-1", "Red"), name
     assert xmp(lib.event / "b.xmp") == ("3", None)
-    assert xmp(lib.event / "c.xmp") == ("4", "Blue")       # the user's stars; a label of the user's own stays
+    assert xmp(lib.event / "c.xmp") == ("4", "Blue")  # the user's stars; a label of the user's own stays
     for name in ("d.jpg", "d.xmp", "f.xmp"):
         assert (lib.event / name).read_bytes() == FILES[name], name
-    assert lib.states() == {"a.jpg": "moved", "DSC_1.NEF": "moved", "e.jpg": "moved", "b.jpg": "present",
-                            "c.jpg": "present", "d.jpg": "present", "f.jpg": "present"}
+    assert lib.states() == {
+        "a.jpg": "moved",
+        "DSC_1.NEF": "moved",
+        "e.jpg": "moved",
+        "b.jpg": "present",
+        "c.jpg": "present",
+        "d.jpg": "present",
+        "f.jpg": "present",
+    }
     info = applies.apply_info(lib.store, lib.root, apply_id)
     assert info is not None
-    assert (info["status"], info["shots_moved"], info["files_moved"], info["xmp_created"], info["xmp_updated"]) \
-        == ("done", 3, 10, 2, 6)
+    assert (info["status"], info["shots_moved"], info["files_moved"], info["xmp_created"], info["xmp_updated"]) == (
+        "done",
+        3,
+        10,
+        2,
+        6,
+    )
     assert info["done"] == info["ops"]
     log = json.loads((rejects / f"karsija-apply-{apply_id}.json").read_text())
     assert log["status"] == "done" and len(log["ops"]) == info["ops"]
@@ -175,8 +207,9 @@ def test_apply_and_restore_leave_the_event_as_it_was(lib: Lib) -> None:
     assert (result["missing"], result["changed"]) == ([], [])
     assert sorted(result["created"]) == [str(kept / EVENT / "b.xmp"), str(kept / EVENT / "e.xmp")]
     assert result["log"] == str(kept / f"karsija-apply-{apply_id}.json")
-    assert sorted(p.relative_to(kept).as_posix() for p in kept.rglob("*") if p.is_file()) == sorted([
-        f"{EVENT}/b.xmp", f"{EVENT}/e.xmp", f"karsija-apply-{apply_id}.json"])
+    assert sorted(p.relative_to(kept).as_posix() for p in kept.rglob("*") if p.is_file()) == sorted(
+        [f"{EVENT}/b.xmp", f"{EVENT}/e.xmp", f"karsija-apply-{apply_id}.json"]
+    )
     assert json.loads((kept / f"karsija-apply-{apply_id}.json").read_text())["status"] == "undone"
     assert set(lib.states().values()) == {"present"}
     info = applies.apply_info(lib.store, lib.root, apply_id)
@@ -202,8 +235,9 @@ def test_a_destination_that_exists_aborts_with_nothing_moved(lib: Lib) -> None:
     (lib.event / REJECT_DIR / "e.jpg").write_bytes(b"an earlier reject")
     before = tree(lib.root)
     p = plan(lib)
-    assert [(str(path.relative_to(lib.root)), why) for path, why in p.conflicts] \
-        == [(f"{EVENT}/{REJECT_DIR}/e.jpg", "on jo olemassa; siirrä tai nimeä se ensin")]
+    assert [(str(path.relative_to(lib.root)), why) for path, why in p.conflicts] == [
+        (f"{EVENT}/{REJECT_DIR}/e.jpg", "on jo olemassa; siirrä tai nimeä se ensin")
+    ]
     with pytest.raises(applies.ApplyConflict):
         applies.apply(lib.store, lib.root, p)
     assert tree(lib.root) == before
@@ -281,8 +315,7 @@ def test_a_failed_apply_can_be_restored(lib: Lib, monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.parametrize("moved", [False, True])
-def test_an_apply_cut_short_by_a_crash_can_be_restored(lib: Lib, monkeypatch: pytest.MonkeyPatch,
-                                                       moved: bool) -> None:
+def test_an_apply_cut_short_by_a_crash_can_be_restored(lib: Lib, monkeypatch: pytest.MonkeyPatch, moved: bool) -> None:
     """The process dies during the 4th move, before or after the rename: the log says it was not done, restore
     finds out from the files."""
     before = tree(lib.root)
@@ -307,7 +340,7 @@ def test_an_apply_cut_short_by_a_crash_can_be_restored(lib: Lib, monkeypatch: py
     lib.store.close()
     # the next server run
     lib.store = Store(lib.root.parent / "state.sqlite")
-    (apply_id, status), = lib.store.db.execute("SELECT id, status FROM applies").fetchall()
+    ((apply_id, status),) = lib.store.db.execute("SELECT id, status FROM applies").fetchall()
     assert status == "running"
     applies.fail_interrupted(lib.store)
     # DSC_1 comes first: its 3 sidecars, then 3 of its moves were done
@@ -321,7 +354,7 @@ def test_restore_skips_a_sidecar_the_failed_apply_did_not_write(lib: Lib, monkey
 
     def write(path: Path, text: str) -> None:
         calls[0] += 1
-        if calls[0] == 3:                    # the 2nd sidecar write (the 1st write is the log)
+        if calls[0] == 3:  # the 2nd sidecar write (the 1st write is the log)
             raise OSError(28, "No space left on device", str(path))
         real(path, text)
 
@@ -365,7 +398,7 @@ def test_a_symlinked_reject_folder_is_a_conflict(lib: Lib, tmp_path: Path) -> No
     (lib.event / REJECT_DIR).symlink_to(elsewhere)
     conflicts = plan(lib).conflicts
     assert conflicts[0][0].name == REJECT_DIR and "linkki" in conflicts[0][1]
-    assert {why for _, why in conflicts[1:]} == {"polku ei ole kirjastossa"}     # every move leads out
+    assert {why for _, why in conflicts[1:]} == {"polku ei ole kirjastossa"}  # every move leads out
 
 
 def test_a_reject_folder_symlinked_after_the_plan_stops_the_apply(lib: Lib, tmp_path: Path) -> None:
@@ -388,7 +421,7 @@ def test_restore_does_not_write_through_a_link_out_of_the_library(lib: Lib, tmp_
     with pytest.raises(applies.ApplyConflict, match="ei enää ole kirjastossa"):
         applies.restore(lib.store, lib.root, apply_id, lib.undone)
     assert target.read_text() == "precious"
-    assert (lib.event / REJECT_DIR / "a.jpg").exists()             # nothing was reversed
+    assert (lib.event / REJECT_DIR / "a.jpg").exists()  # nothing was reversed
 
 
 def test_a_log_name_taken_in_the_reject_folder_stops_the_apply(lib: Lib, tmp_path: Path) -> None:
@@ -417,7 +450,7 @@ def test_an_unexpected_error_marks_the_apply_failed(lib: Lib, monkeypatch: pytes
     with pytest.raises(sqlite3.OperationalError):
         applies.apply(lib.store, lib.root, plan(lib))
     monkeypatch.undo()
-    (apply_id, status, error), = lib.store.db.execute("SELECT id, status, error FROM applies").fetchall()
+    ((apply_id, status, error),) = lib.store.db.execute("SELECT id, status, error FROM applies").fetchall()
     assert status == "failed" and "database is locked" in error
     applies.restore(lib.store, lib.root, apply_id, lib.undone)
     assert tree(lib.root) == before
@@ -426,7 +459,7 @@ def test_an_unexpected_error_marks_the_apply_failed(lib: Lib, monkeypatch: pytes
 def test_a_shot_whose_moved_files_are_gone_stays_out_of_the_grid(lib: Lib) -> None:
     apply_id = applies.apply(lib.store, lib.root, plan(lib))
     for name in ("e.jpg", "e.xmp"):
-        (lib.event / REJECT_DIR / name).unlink()            # the user deleted them by hand
+        (lib.event / REJECT_DIR / name).unlink()  # the user deleted them by hand
     result = applies.restore(lib.store, lib.root, apply_id, lib.undone)
     assert sorted(result["missing"]) == [f"{EVENT}/{REJECT_DIR}/e.jpg", f"{EVENT}/{REJECT_DIR}/e.xmp"]
     assert lib.states()["e.jpg"] == "missing" and lib.states()["a.jpg"] == "present"
@@ -457,7 +490,7 @@ def test_api_apply_and_restore(lib: Lib, client: TestClient) -> None:
     assert (applied["status"], applied["shots_moved"]) == ("done", 3)
     assert applied["log"] == f"{EVENT}/{REJECT_DIR}/karsija-apply-{applied['id']}.json"
     shots = client.get(f"/api/events/{lib.event_id}").json()
-    assert sum(len(g["shots"]) for g in shots["groups"]) == 4           # the moved ones are gone from the event
+    assert sum(len(g["shots"]) for g in shots["groups"]) == 4  # the moved ones are gone from the event
 
     history = client.get(f"/api/events/{lib.event_id}/applies").json()["applies"]
     assert [a["id"] for a in history] == [applied["id"]]
@@ -507,8 +540,9 @@ def test_api_conflict_and_unknown_event(lib: Lib, client: TestClient) -> None:
     (lib.event / REJECT_DIR).mkdir()
     (lib.event / REJECT_DIR / "a.jpg").write_bytes(b"x")
     data = client.get(f"/api/events/{lib.event_id}/apply-plan").json()
-    assert data["conflicts"] == [{"path": f"{EVENT}/{REJECT_DIR}/a.jpg",
-                                  "reason": "on jo olemassa; siirrä tai nimeä se ensin"}]
+    assert data["conflicts"] == [
+        {"path": f"{EVENT}/{REJECT_DIR}/a.jpg", "reason": "on jo olemassa; siirrä tai nimeä se ensin"}
+    ]
     resp = post(client, f"/api/events/{lib.event_id}/apply", {"confirm_token": data["confirm_token"]})
     assert resp.status_code == 409
     assert client.get("/api/events/999/apply-plan").status_code == 404

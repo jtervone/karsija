@@ -83,11 +83,13 @@ def test_scan_write_xmp_merges(library: Library, tmp_path: Path, capsys: pytest.
     (event / "sharp.jpg.xmp").write_text(users_own, encoding="utf-8")
     report = tmp_path / "report"
     args = ["scan", str(root), "--report", str(report), "--workers", "2", "--write-xmp"]
-    assert main(args) == 1                                    # a sidecar failed
+    assert main(args) == 1  # a sidecar failed
 
     captured = capsys.readouterr()
-    assert "XMP: 10 kuvaa: päivitetty 1, uusi sivutiedosto 7, oma arvio säilytetty (ks. --xmp-overwrite) 1, " \
-           "epäonnistui (ks. virheet yllä) 1" in captured.out
+    assert (
+        "XMP: 10 kuvaa: päivitetty 1, uusi sivutiedosto 7, oma arvio säilytetty (ks. --xmp-overwrite) 1, "
+        "epäonnistui (ks. virheet yllä) 1" in captured.out
+    )
     assert "motion.xmp" in captured.err and "Korjaa tai siirrä" in captured.err
     assert (event / "motion.xmp").read_text(encoding="utf-8") == "<x:xmpmeta"
     merged = (event / "DSC_0100.NEF.xmp").read_text(encoding="utf-8")
@@ -114,15 +116,26 @@ def test_scan_imports_legacy_cache(library: Library, tmp_path: Path, capsys: pyt
     verdicts = read_verdicts(report)
     # rebuild the old karsija.py cache from the new store, then start from it alone
     db = sqlite3.connect(report / "karsija.sqlite")
-    rows = db.execute("SELECT key, sig, files, taken, sharp, sharp_global, clip_hi, clip_lo, dhash, hist, error "
-                      "FROM shots").fetchall()
+    rows = db.execute(
+        "SELECT key, sig, files, taken, sharp, sharp_global, clip_hi, clip_lo, dhash, hist, error FROM shots"
+    ).fetchall()
     db.close()
     (report / "karsija.sqlite").unlink()
     legacy = sqlite3.connect(report / "cache.sqlite")
     legacy.execute("CREATE TABLE shots (key TEXT PRIMARY KEY, sig TEXT, data TEXT)")
     for key, sig, files, taken, sharp, sharp_global, clip_hi, clip_lo, dh, hist, error in rows:
-        data = {"key": key, "files": json.loads(files), "taken": taken, "sharp": sharp, "sharp_global": sharp_global,
-                "clip_hi": clip_hi, "clip_lo": clip_lo, "dhash": dh, "hist": json.loads(hist), "error": error}
+        data = {
+            "key": key,
+            "files": json.loads(files),
+            "taken": taken,
+            "sharp": sharp,
+            "sharp_global": sharp_global,
+            "clip_hi": clip_hi,
+            "clip_lo": clip_lo,
+            "dhash": dh,
+            "hist": json.loads(hist),
+            "error": error,
+        }
         legacy.execute("INSERT INTO shots VALUES (?, ?, ?)", (key, sig, json.dumps(data)))
     legacy.commit()
     legacy.close()
@@ -156,23 +169,29 @@ def fake_uvicorn(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     return calls
 
 
-def test_serve_defaults(library: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-                        fake_uvicorn: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]) -> None:
+def test_serve_defaults(
+    library: Library,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_uvicorn: list[dict[str, Any]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     assert main(["serve", str(library.root), "--no-browser"]) == 0
     (call,) = fake_uvicorn
     assert (call["host"], call["port"]) == ("127.0.0.1", 8765)
-    assert call["timeout_graceful_shutdown"] == 2              # an open page (SSE) does not keep Ctrl+C waiting
+    assert call["timeout_graceful_shutdown"] == 2  # an open page (SSE) does not keep Ctrl+C waiting
     assert call["app"].state.root == library.root.resolve()
     assert call["app"].state.db_path == default_db_path(library.root)
     assert call["app"].state.db_path.parent.is_dir()
     out, err = capsys.readouterr()
     assert "http://127.0.0.1:8765/" in out and err == ""
-    assert not any(library.root.rglob("*.sqlite"))           # nothing is written into the library
+    assert not any(library.root.rglob("*.sqlite"))  # nothing is written into the library
 
 
-def test_serve_preview_dir(library: Library, tmp_path: Path, fake_uvicorn: list[dict[str, Any]],
-                           capsys: pytest.CaptureFixture[str]) -> None:
+def test_serve_preview_dir(
+    library: Library, tmp_path: Path, fake_uvicorn: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
+) -> None:
     db = str(tmp_path / "k.sqlite")
     assert main(["serve", str(library.root), "--no-browser", "--db", db, "--previews", str(tmp_path / "p")]) == 0
     assert fake_uvicorn[0]["app"].state.previews.cache_dir == tmp_path / "p"
@@ -181,8 +200,9 @@ def test_serve_preview_dir(library: Library, tmp_path: Path, fake_uvicorn: list[
     assert fake_uvicorn[1]["app"].state.previews.cache_dir == default_cache_dir()
 
 
-def test_serve_warns_about_the_preview_dir(library: Library, tmp_path: Path, fake_uvicorn: list[dict[str, Any]],
-                                          capsys: pytest.CaptureFixture[str]) -> None:
+def test_serve_warns_about_the_preview_dir(
+    library: Library, tmp_path: Path, fake_uvicorn: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
+) -> None:
     db = str(tmp_path / "k.sqlite")
     (tmp_path / "file").write_bytes(b"")
     assert main(["serve", str(library.root), "--no-browser", "--db", db, "--previews", str(tmp_path / "file")]) == 0
@@ -196,9 +216,9 @@ def test_serve_warns_about_the_preview_dir(library: Library, tmp_path: Path, fak
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.10", "::", "example.local"])
-def test_serve_warns_on_non_loopback_host(library: Library, tmp_path: Path, host: str,
-                                          fake_uvicorn: list[dict[str, Any]],
-                                          capsys: pytest.CaptureFixture[str]) -> None:
+def test_serve_warns_on_non_loopback_host(
+    library: Library, tmp_path: Path, host: str, fake_uvicorn: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
+) -> None:
     db = tmp_path / "db" / "k.sqlite"
     assert main(["serve", str(library.root), "--host", host, "--port", "9000", "--no-browser", "--db", str(db)]) == 0
     assert fake_uvicorn[0]["host"] == host and fake_uvicorn[0]["app"].state.db_path == db
@@ -206,21 +226,22 @@ def test_serve_warns_on_non_loopback_host(library: Library, tmp_path: Path, host
 
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.2", "::1", "localhost"])
-def test_serve_loopback_hosts_do_not_warn(library: Library, tmp_path: Path, host: str,
-                                          fake_uvicorn: list[dict[str, Any]],
-                                          capsys: pytest.CaptureFixture[str]) -> None:
+def test_serve_loopback_hosts_do_not_warn(
+    library: Library, tmp_path: Path, host: str, fake_uvicorn: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
+) -> None:
     assert main(["serve", str(library.root), "--host", host, "--no-browser", "--db", str(tmp_path / "k.sqlite")]) == 0
     assert capsys.readouterr().err == ""
 
 
-def test_serve_opens_browser_when_ready(library: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-                                        fake_uvicorn: list[dict[str, Any]]) -> None:
+def test_serve_opens_browser_when_ready(
+    library: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_uvicorn: list[dict[str, Any]]
+) -> None:
     import webbrowser
 
     opened: list[str] = []
     monkeypatch.setattr(webbrowser, "open", opened.append)
     assert main(["serve", str(library.root), "--port", "9001", "--db", str(tmp_path / "k.sqlite")]) == 0
-    assert opened == []                                       # not before the server is up
+    assert opened == []  # not before the server is up
     with TestClient(fake_uvicorn[0]["app"]):
         pass
     for _ in range(50):
@@ -240,9 +261,13 @@ def allowed_hosts(app: Any) -> list[str]:
     return list(guard.kwargs["allowed_hosts"])
 
 
-def test_serve_any_address_prints_a_usable_url(library: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-                                               fake_uvicorn: list[dict[str, Any]],
-                                               capsys: pytest.CaptureFixture[str]) -> None:
+def test_serve_any_address_prints_a_usable_url(
+    library: Library,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_uvicorn: list[dict[str, Any]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     import webbrowser
 
     opened: list[str] = []
@@ -264,16 +289,39 @@ def test_serve_any_address_prints_a_usable_url(library: Library, tmp_path: Path,
 def test_serve_allows_its_own_host_name(library: Library, tmp_path: Path, fake_uvicorn: list[dict[str, Any]]) -> None:
     for host in ("::1", "192.168.1.10"):
         assert main(["serve", str(library.root), "--host", host, "--no-browser", "--db", str(tmp_path / "k")]) == 0
-    assert main(["serve", str(library.root), "--host", "192.168.1.10", "--allow-host", "Kone.local",
-                 "--allow-host", "fe80::1", "--no-browser", "--db", str(tmp_path / "k")]) == 0
+    assert (
+        main(
+            [
+                "serve",
+                str(library.root),
+                "--host",
+                "192.168.1.10",
+                "--allow-host",
+                "Kone.local",
+                "--allow-host",
+                "fe80::1",
+                "--no-browser",
+                "--db",
+                str(tmp_path / "k"),
+            ]
+        )
+        == 0
+    )
     assert allowed_hosts(fake_uvicorn[0]["app"]) == ["127.0.0.1", "localhost", "[::1]"]
     assert allowed_hosts(fake_uvicorn[1]["app"]) == ["127.0.0.1", "localhost", "[::1]", "192.168.1.10"]
-    assert allowed_hosts(fake_uvicorn[2]["app"]) == ["127.0.0.1", "localhost", "[::1]", "192.168.1.10", "kone.local",
-                                                     "[fe80::1]"]
+    assert allowed_hosts(fake_uvicorn[2]["app"]) == [
+        "127.0.0.1",
+        "localhost",
+        "[::1]",
+        "192.168.1.10",
+        "kone.local",
+        "[fe80::1]",
+    ]
 
 
-def test_serve_on_every_address_still_checks_host(library: Library, tmp_path: Path,
-                                                  fake_uvicorn: list[dict[str, Any]]) -> None:
+def test_serve_on_every_address_still_checks_host(
+    library: Library, tmp_path: Path, fake_uvicorn: list[dict[str, Any]]
+) -> None:
     """DNS rebinding: a page whose name resolves to this machine must not get in when listening on 0.0.0.0."""
     for host in ("0.0.0.0", "::"):
         assert main(["serve", str(library.root), "--host", host, "--no-browser", "--db", str(tmp_path / "k")]) == 0
@@ -290,12 +338,13 @@ def test_serve_docs_flag(library: Library, tmp_path: Path, fake_uvicorn: list[di
     assert {c["app"].redoc_url for c in fake_uvicorn} == {None}
 
 
-def test_serve_warns_without_event_folders(tmp_path: Path, fake_uvicorn: list[dict[str, Any]],
-                                           capsys: pytest.CaptureFixture[str]) -> None:
+def test_serve_warns_without_event_folders(
+    tmp_path: Path, fake_uvicorn: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
+) -> None:
     (tmp_path / "2025").mkdir()
     assert main(["serve", str(tmp_path / "2025"), "--no-browser", "--db", str(tmp_path / "k")]) == 0
     assert "VAROITUS: kansiossa ei ole YYYY/YYYY-MM-DD* -kansioita" in capsys.readouterr().err
-    assert len(fake_uvicorn) == 1                                 # a warning only: folders may still be added
+    assert len(fake_uvicorn) == 1  # a warning only: folders may still be added
 
 
 def test_serve_busy_port(library: Library, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

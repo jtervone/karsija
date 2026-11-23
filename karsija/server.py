@@ -44,14 +44,18 @@ from karsija.library import (
 from karsija.store import UNSET, Store
 
 STATIC_DIR = Path(__file__).parent / "static"
-KEEPALIVE = 15.0              # seconds between SSE comments on an idle stream
-PREVIEW_MAX_AGE = 365 * 24 * 3600   # seconds a browser may keep a preview of a versioned URL without asking again
-SUGGESTION = {"best": "keep", "keep": "keep", "similar": "reject", "blurry": "reject"}   # auto verdict -> decision
+KEEPALIVE = 15.0  # seconds between SSE comments on an idle stream
+PREVIEW_MAX_AGE = 365 * 24 * 3600  # seconds a browser may keep a preview of a versioned URL without asking again
+SUGGESTION = {"best": "keep", "keep": "keep", "similar": "reject", "blurry": "reject"}  # auto verdict -> decision
 
-UI_CSP = ("default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'; "
-          "frame-ancestors 'none'")
-_SHOT_COLS = ("id, event_id, key, files, sig, taken, sharp, sharp_global, clip_hi, clip_lo, error, group_id, "
-              "auto_verdict, reason, user_verdict, rating, decided_at, state")
+UI_CSP = (
+    "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'; "
+    "frame-ancestors 'none'"
+)
+_SHOT_COLS = (
+    "id, event_id, key, files, sig, taken, sharp, sharp_global, clip_hi, clip_lo, error, group_id, "
+    "auto_verdict, reason, user_verdict, rating, decided_at, state"
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -71,11 +75,12 @@ class Broker:
         for loop, q in subs:
             try:
                 loop.call_soon_threadsafe(q.put_nowait, msg)
-            except RuntimeError:          # the client's loop is gone
+            except RuntimeError:  # the client's loop is gone
                 pass
 
-    async def stream(self, is_disconnected: Callable[[], Awaitable[bool]],
-                     initial: Callable[[], Sequence[str]] = tuple) -> AsyncIterator[str]:
+    async def stream(
+        self, is_disconnected: Callable[[], Awaitable[bool]], initial: Callable[[], Sequence[str]] = tuple
+    ) -> AsyncIterator[str]:
         """SSE body: the messages of ``initial()``, then every published event, with keep-alive comments when idle.
 
         ``initial`` runs after the subscription is in place, so an event published meanwhile is not lost (at worst
@@ -187,7 +192,7 @@ class JobRunner:
             self._publish(store, job_id, status="running", started=time.time())
             if scope == "all":
                 events = sync_events(store, self.root)
-                store.commit()          # never hold the write lock across the scan: decisions must get through
+                store.commit()  # never hold the write lock across the scan: decisions must get through
             else:
                 row = store.db.execute("SELECT rel_path FROM events WHERE id = ?", (int(scope),)).fetchone()
                 if row is None:
@@ -205,24 +210,25 @@ class JobRunner:
                         continue
                     on_disk[event_id].add(primary)
                     sig = Store.signature(files)
-                    if store.get(primary, sig) is None:       # cache hit by signature skips the work
+                    if store.get(primary, sig) is None:  # cache hit by signature skips the work
                         todo.append((event_id, primary, files, sig))
                     elif store.db.in_transaction:
-                        store.commit()                        # get() stored the EXIF of an old row
+                        store.commit()  # get() stored the EXIF of an old row
                 store.mark_missing(event_id, on_disk[event_id])
                 store.commit()
             self._publish(store, job_id, total=len(todo))
 
             if todo:
                 pool = self._get_pool()
-                futs.update({pool.submit(analyse_file, p, f, (self.preview_dir, sig)): (eid, sig)
-                             for eid, p, f, sig in todo})
+                futs.update(
+                    {pool.submit(analyse_file, p, f, (self.preview_dir, sig)): (eid, sig) for eid, p, f, sig in todo}
+                )
                 for done, fut in enumerate(cf.as_completed(futs), 1):
                     eid, sig = futs[fut]
                     store.put(eid, fut.result(), sig)
                     self._publish(store, job_id, done=done)
 
-            store.begin_write()         # a settings change waits, or has already re-judged: no stale verdicts
+            store.begin_write()  # a settings change waits, or has already re-judged: no stale verdicts
             settings = store.settings()
             for event_id, keys in on_disk.items():
                 shots = store.event_shots(event_id, keys)
@@ -265,6 +271,7 @@ class ApplyRequest(BaseModel):
 class SettingsRequest(BaseModel):
     """Thresholds to change; a field left out keeps its value, ``null`` (or the default value) puts back its
     default."""
+
     model_config = ConfigDict(extra="forbid")
     abs_blur: float | None = Field(default=None, ge=0, le=1e6, allow_inf_nan=False)
     rel_blur: float | None = Field(default=None, ge=0, le=1)
@@ -319,17 +326,23 @@ class RequestGuard:
         response: Response | None = None
         if host_name(host) not in self.allowed_hosts:
             name = host_name(host)
-            response = JSONResponse({"detail": f'tuntematon Host-otsake "{name}"; käytä osoitetta '
-                                               f'{" tai ".join(sorted(self.allowed_hosts))} tai käynnistä '
-                                               f'palvelin valitsimella --allow-host {name or "NIMI"}'}, 400)
+            response = JSONResponse(
+                {
+                    "detail": f'tuntematon Host-otsake "{name}"; käytä osoitetta '
+                    f"{' tai '.join(sorted(self.allowed_hosts))} tai käynnistä "
+                    f"palvelin valitsimella --allow-host {name or 'NIMI'}"
+                },
+                400,
+            )
         elif scope["method"] in WRITE_METHODS:
             origin = headers.get("origin")
             own = origin is not None and origin.lower() == f"{scope['scheme']}://{host}".lower()
             bodyless = headers.get("content-length", "0") == "0" and "transfer-encoding" not in headers
             if origin is not None and not own:
                 response = JSONResponse({"detail": "pyyntö toiselta sivustolta"}, 403)
-            elif headers.get("content-type", "").split(";")[0].strip().lower() != "application/json" \
-                    and not (own and bodyless):
+            elif headers.get("content-type", "").split(";")[0].strip().lower() != "application/json" and not (
+                own and bodyless
+            ):
                 response = JSONResponse({"detail": "vaatii Content-Type: application/json"}, 415)
         if response is not None:
             await response(scope, receive, send)
@@ -367,9 +380,16 @@ def get_store(request: Request) -> Iterator[Store]:
 Db = Annotated[Store, Depends(get_store, scope="function")]
 
 
-def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[], None] | None = None,
-               allowed_hosts: Collection[str] = LOOPBACK_HOSTS, docs: bool = False,
-               preview_dir: Path | None = None, undone_dir: Path | None = None) -> FastAPI:
+def create_app(
+    root: Path,
+    db_path: Path,
+    workers: int = 2,
+    on_ready: Callable[[], None] | None = None,
+    allowed_hosts: Collection[str] = LOOPBACK_HOSTS,
+    docs: bool = False,
+    preview_dir: Path | None = None,
+    undone_dir: Path | None = None,
+) -> FastAPI:
     """``allowed_hosts``: accepted ``Host`` header names, see ``RequestGuard``.
 
     ``preview_dir``: preview cache, by default ``previews.default_cache_dir()``. ``undone_dir``: where restoring an
@@ -383,7 +403,7 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
     broker = Broker()
     runner = JobRunner(root, db_path, workers, broker, preview_cache.cache_dir)
     undone = undone_dir or applies.default_undone_dir()
-    apply_lock = threading.Lock()       # one apply or restore at a time: each plans from the files as they are
+    apply_lock = threading.Lock()  # one apply or restore at a time: each plans from the files as they are
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -429,21 +449,26 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
     def shots_by_id(store: Store, ids: list[int]) -> list[dict[str, Any]]:
         if not ids:
             return []
-        rows = query(store, f"SELECT {_SHOT_COLS} FROM shots WHERE id IN ({', '.join('?' * len(ids))}) ORDER BY id",
-                     tuple(ids))
+        rows = query(
+            store, f"SELECT {_SHOT_COLS} FROM shots WHERE id IN ({', '.join('?' * len(ids))}) ORDER BY id", tuple(ids)
+        )
         return [shot_json(r) for r in rows]
 
     def event_summaries(store: Store, ids: list[int]) -> list[dict[str, Any]]:
         if not ids:
             return []
-        rows = query(store, f"""
+        rows = query(
+            store,
+            f"""
             SELECT e.id, e.rel_path, e.year, e.name, e.analysed_at,
                    COUNT(s.id) AS shots,
                    COALESCE(SUM(s.auto_verdict IN ('blurry', 'similar')), 0) AS candidates,
                    COALESCE(SUM(s.user_verdict IS NOT NULL), 0) AS reviewed
             FROM events e LEFT JOIN shots s ON s.event_id = e.id AND s.state = 'present'
-            WHERE e.id IN ({', '.join('?' * len(ids))})
-            GROUP BY e.id ORDER BY e.rel_path DESC""", tuple(ids))
+            WHERE e.id IN ({", ".join("?" * len(ids))})
+            GROUP BY e.id ORDER BY e.rel_path DESC""",
+            tuple(ids),
+        )
         return [{**dict(r), "unreviewed": r["shots"] - r["reviewed"]} for r in rows]
 
     # ----------------------------------------------------------------------- #
@@ -459,12 +484,16 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
     @app.post("/api/analyse", status_code=202)
     def analyse(body: AnalyseRequest, store: Db, response: Response) -> dict[str, Any]:
         """Start an analysis (202). If one with the same scope is already queued or running, return it (200)."""
-        if body.scope != "all" and store.db.execute("SELECT 1 FROM events WHERE id = ?", (body.scope,)).fetchone() \
-                is None:
+        if (
+            body.scope != "all"
+            and store.db.execute("SELECT 1 FROM events WHERE id = ?", (body.scope,)).fetchone() is None
+        ):
             raise HTTPException(404, "tapahtumaa ei ole")
         pending = store.db.execute(
             "SELECT id FROM jobs WHERE kind = 'analyse' AND scope = ? AND status IN ('queued', 'running') "
-            "ORDER BY id LIMIT 1", (str(body.scope),)).fetchone()
+            "ORDER BY id LIMIT 1",
+            (str(body.scope),),
+        ).fetchone()
         if pending:
             response.status_code = 200
             return {"job_id": pending[0], "job": store.job(pending[0])}
@@ -492,16 +521,22 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
             finally:
                 store.close()
 
-        return StreamingResponse(broker.stream(request.is_disconnected, initial), media_type="text/event-stream",
-                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        return StreamingResponse(
+            broker.stream(request.is_disconnected, initial),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/api/events/{event_id}")
     def event(event_id: int, store: Db) -> dict[str, Any]:
         summary = event_summaries(store, [event_id])
         if not summary:
             raise HTTPException(404, "tapahtumaa ei ole")
-        rows = query(store, f"SELECT {_SHOT_COLS} FROM shots WHERE event_id = ? AND state = 'present' "
-                            "ORDER BY taken, key", (event_id,))
+        rows = query(
+            store,
+            f"SELECT {_SHOT_COLS} FROM shots WHERE event_id = ? AND state = 'present' ORDER BY taken, key",
+            (event_id,),
+        )
         groups: dict[int | None, list[dict[str, Any]]] = {}
         for r in rows:
             groups.setdefault(r["group_id"], []).append(shot_json(r))
@@ -510,15 +545,19 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
             "event": summary[0],
             "settings": store.settings(),
             "default_settings": DEFAULT_SETTINGS,
-            "median_sharp": statistics.median(sharp) if sharp else None,   # as judge() takes it
-            "sharpness": sharp,                 # histogram data
+            "median_sharp": statistics.median(sharp) if sharp else None,  # as judge() takes it
+            "sharpness": sharp,  # histogram data
             "groups": [{"group_id": gid, "shots": shots} for gid, shots in groups.items()],
         }
 
     def analysing(store: Store, event_id: int) -> bool:
         """An analysis covering the event is queued or running: an apply must wait for it."""
-        return store.db.execute("SELECT 1 FROM jobs WHERE status IN ('queued', 'running') AND scope IN ('all', ?)",
-                                (str(event_id),)).fetchone() is not None
+        return (
+            store.db.execute(
+                "SELECT 1 FROM jobs WHERE status IN ('queued', 'running') AND scope IN ('all', ?)", (str(event_id),)
+            ).fetchone()
+            is not None
+        )
 
     @app.get("/api/events/{event_id}/apply-plan")
     def apply_plan(event_id: int, store: Db) -> dict[str, Any]:
@@ -582,8 +621,9 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
         return shot_json(rows[0])
 
     @app.get("/api/shots/{shot_id}/preview")
-    def preview(shot_id: int, store: Db, request: Request,
-                size: Literal["grid", "full"] = "grid", v: str | None = None) -> Response:
+    def preview(
+        shot_id: int, store: Db, request: Request, size: Literal["grid", "full"] = "grid", v: str | None = None
+    ) -> Response:
         """Upright JPEG of the shot, long edge 400 px (``grid``) or 2560 px (``full``). Made on first request if the
         analysis has not made it yet. The ``ETag`` changes whenever a file of the shot changes.
 
@@ -604,9 +644,8 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
         version = previews.etag(sig)
         headers = {
             "ETag": f'"{version}-{size}"',
-            "Cache-Control": f"private, max-age={PREVIEW_MAX_AGE}, immutable" if v == version
-            else "private, no-cache",
-            "Cross-Origin-Resource-Policy": "same-origin",       # other sites cannot embed (and probe) previews
+            "Cache-Control": f"private, max-age={PREVIEW_MAX_AGE}, immutable" if v == version else "private, no-cache",
+            "Cross-Origin-Resource-Policy": "same-origin",  # other sites cannot embed (and probe) previews
             "X-Content-Type-Options": "nosniff",
         }
         if etag_matches(request.headers.get("if-none-match", ""), headers["ETag"]):
@@ -632,9 +671,15 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
         if store.db.execute("SELECT 1 FROM shots WHERE id = ?", (shot_id,)).fetchone() is None:
             raise HTTPException(404, "kuvaa ei ole")
         fields = body.model_fields_set
-        batch = store.decide([(shot_id,
-                               body.user_verdict if "user_verdict" in fields else UNSET,
-                               body.rating if "rating" in fields else UNSET)])
+        batch = store.decide(
+            [
+                (
+                    shot_id,
+                    body.user_verdict if "user_verdict" in fields else UNSET,
+                    body.rating if "rating" in fields else UNSET,
+                )
+            ]
+        )
         return {"batch": batch, "shots": shots_by_id(store, [shot_id])}
 
     @app.post("/api/groups/{event_id}/{group_id}/accept")
@@ -672,11 +717,15 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
         ``settings`` in effect and how many ``events`` were judged again."""
         if not body.model_fields_set:
             raise HTTPException(422, "anna ainakin yksi asetus")
-        with apply_lock:                # an apply's plan must not change between its check and its run
+        with apply_lock:  # an apply's plan must not change between its check and its run
             store.begin_write()
             # a value equal to its default follows the default, also if a later version changes it
-            store.set_settings({k: None if getattr(body, k) == DEFAULT_SETTINGS[k] else getattr(body, k)
-                                for k in body.model_fields_set})
+            store.set_settings(
+                {
+                    k: None if getattr(body, k) == DEFAULT_SETTINGS[k] else getattr(body, k)
+                    for k in body.model_fields_set
+                }
+            )
             settings = store.settings()
             events = rejudge(store, settings)
             store.commit()
@@ -692,8 +741,13 @@ def create_app(root: Path, db_path: Path, workers: int = 2, on_ready: Callable[[
         if p.suffix.lower() not in JPEG_EXT | RAW_EXT or not p.is_file():
             raise HTTPException(404, "tiedostoa ei ole")
         media_type = "application/octet-stream" if p.suffix.lower() in RAW_EXT else None
-        return FileResponse(p, media_type=media_type, filename=p.name, content_disposition_type="inline",
-                            headers={"X-Content-Type-Options": "nosniff"})
+        return FileResponse(
+            p,
+            media_type=media_type,
+            filename=p.name,
+            content_disposition_type="inline",
+            headers={"X-Content-Type-Options": "nosniff"},
+        )
 
     app.mount("/", UIFiles(directory=STATIC_DIR, html=True), name="static")
     return app

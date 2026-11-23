@@ -34,7 +34,7 @@ def test_sharpness_ranking(library: Library) -> None:
 
 def test_dhash_and_hamming(library: Library) -> None:
     a, b = dhash(gray(library, "burst_0.jpg")), dhash(gray(library, "burst_1.jpg"))
-    assert len(a) == 64                       # 16x16 bits
+    assert len(a) == 64  # 16x16 bits
     assert hamming(a, a) == 0
     assert hamming(a, b) <= 40
     assert hamming(a, dhash(gray(library, "sharp.jpg"))) > 40
@@ -72,7 +72,7 @@ def test_group_and_judge_uses_defaults_and_overrides(analysed: dict[str, Shot]) 
     shots = list(analysed.values())
     group_and_judge(shots, {})
     assert {n: analysed[n].verdict for n in EXPECTED} == EXPECTED
-    group_and_judge(shots, {"gap": 0.1})              # burst frames are 0.3 s apart: no groups any more
+    group_and_judge(shots, {"gap": 0.1})  # burst frames are 0.3 s apart: no groups any more
     assert len({s.group for s in shots}) == len(shots)
     group_and_judge(shots, {"sim_keep": 0.5})
     assert "keep" in {analysed[n].verdict for n in BURST}
@@ -80,7 +80,7 @@ def test_group_and_judge_uses_defaults_and_overrides(analysed: dict[str, Shot]) 
 
 def test_analyse_file_reads_exif(analysed: dict[str, Shot]) -> None:
     assert analysed["sharp.jpg"].exif == {**EXIF_META, "datetime_original": "2025:06:01 12:00:00"}
-    assert analysed["DSC_0100.NEF"].exif["camera"] == "NIKON Z 6"      # read from the JPEG of the pair
+    assert analysed["DSC_0100.NEF"].exif["camera"] == "NIKON Z 6"  # read from the JPEG of the pair
 
 
 # --------------------------------------------------------------------------- #
@@ -112,11 +112,25 @@ def test_judge_sim_keep() -> None:
 
 def test_judge_blurry() -> None:
     # median 100: "b" is below rel_blur * median, "d" below abs_blur, "c" is the blurry best of its group
-    shots = [shot("a", 100, 1), shot("b", 20, 1), shot("c", 20, 2), shot("d", 5, 3), shot("e", 100, 4),
-             shot("f", 100, 5), shot("g", 100, 6)]
+    shots = [
+        shot("a", 100, 1),
+        shot("b", 20, 1),
+        shot("c", 20, 2),
+        shot("d", 5, 3),
+        shot("e", 100, 4),
+        shot("f", 100, 5),
+        shot("g", 100, 6),
+    ]
     judge(shots, **DEFAULTS)
-    assert verdicts(shots) == {"a": "best", "b": "blurry", "c": "blurry", "d": "blurry",
-                               "e": "keep", "f": "keep", "g": "keep"}
+    assert verdicts(shots) == {
+        "a": "best",
+        "b": "blurry",
+        "c": "blurry",
+        "d": "blurry",
+        "e": "keep",
+        "f": "keep",
+        "g": "keep",
+    }
     assert shots[1].reason == "terävyys 20 (kansion mediaani 100)"
     assert shots[2].reason == "paras ryhmästään mutta epäterävä (20, kansion mediaani 100)"
 

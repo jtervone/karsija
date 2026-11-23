@@ -20,7 +20,7 @@ REJECT_DIR = "_karsitut"
 
 RATING = {"best": 5, "keep": 3, "similar": 1, "blurry": -1}
 LABEL = {"best": "Green", "keep": "", "similar": "Yellow", "blurry": "Red"}
-OWN_LABELS = {v for v in LABEL.values() if v}      # the only labels an empty label removes
+OWN_LABELS = {v for v in LABEL.values() if v}  # the only labels an empty label removes
 # values karsija may replace when the user's own are kept: what it writes itself, 0 (unrated) or none
 OWN_RATING_VALUES = {"", "0", *(str(v) for v in RATING.values())}
 OWN_LABEL_VALUES = {"", *OWN_LABELS}
@@ -106,8 +106,9 @@ def sidecars(path: str | Path, files: Iterable[str | Path] = ()) -> list[Path]:
     return [c for c in dict.fromkeys(candidates) if c.exists()] or [p.with_suffix(".xmp")]
 
 
-def xmp_set(path: str | Path, rating: int, label: str, files: Iterable[str | Path] = (),
-            keep_user_values: bool = False) -> dict[Path, str | None]:
+def xmp_set(
+    path: str | Path, rating: int, label: str, files: Iterable[str | Path] = (), keep_user_values: bool = False
+) -> dict[Path, str | None]:
     """Write ``xmp:Rating`` and ``xmp:Label`` into every sidecar of the image ``path`` (and of ``files``).
 
     Existing sidecars are merged into: only Rating and Label change, everything else and the text around
@@ -145,8 +146,9 @@ def xmp_set(path: str | Path, rating: int, label: str, files: Iterable[str | Pat
     return old
 
 
-def xmp_changes(path: str | Path, rating: int, label: str, files: Iterable[str | Path] = (),
-                keep_user_values: bool = False) -> dict[Path, tuple[str | None, str]]:
+def xmp_changes(
+    path: str | Path, rating: int, label: str, files: Iterable[str | Path] = (), keep_user_values: bool = False
+) -> dict[Path, tuple[str | None, str]]:
     """What ``xmp_set`` would write, without writing: ``sidecar -> (previous content or None, new content)`` for
     each sidecar that would change. Raises as ``xmp_set`` does before it writes anything."""
     out: dict[Path, tuple[str | None, str]] = {}
@@ -198,8 +200,9 @@ def _merge(text: str, rating: int, label: str, keep_user_values: bool = False) -
         raise XmpError(f"virheellinen XML ({e})") from None
 
     descriptions = _descriptions(root)
-    if keep_user_values and not (_values(descriptions, "Rating") <= OWN_RATING_VALUES
-                                 and _values(descriptions, "Label") <= OWN_LABEL_VALUES):
+    if keep_user_values and not (
+        _values(descriptions, "Rating") <= OWN_RATING_VALUES and _values(descriptions, "Label") <= OWN_LABEL_VALUES
+    ):
         raise _UserValues
     _set_property(descriptions, "Rating", str(rating))
     _set_property(descriptions, "Label", label or None, removable=OWN_LABELS)
@@ -211,13 +214,16 @@ def _merge(text: str, rating: int, label: str, keep_user_values: bool = False) -
         out = ET.tostring(root, encoding="unicode")
     # ElementTree declares only the namespaces in use, at the root; keep the unused ones too
     declared = {prefix for _, (prefix, _) in ET.iterparse(io.StringIO(out), events=("start-ns",))}
-    missing = "".join(f" xmlns:{p}={quoteattr(u)}" for p, u in dict(namespaces).items()
-                      if p and p not in declared and not re.fullmatch(r"ns\d+", p))
+    missing = "".join(
+        f" xmlns:{p}={quoteattr(u)}"
+        for p, u in dict(namespaces).items()
+        if p and p not in declared and not re.fullmatch(r"ns\d+", p)
+    )
     if missing:
         at = _ROOT_NAME.match(out).end()  # type: ignore[union-attr]
         out = out[:at] + missing + out[at:]
     try:
-        ET.fromstring(out)                  # never write what the next reader cannot parse
+        ET.fromstring(out)  # never write what the next reader cannot parse
     except ET.ParseError as e:
         raise XmpError(f"yhdistetty XMP ei ole kelvollista XML:ää ({e})") from None
     if "\r\n" in body and "\n" not in body.replace("\r\n", ""):
@@ -234,7 +240,8 @@ def _descriptions(root: ET.Element) -> list[ET.Element]:
     if rdf is None:
         raise XmpError("rdf:RDF puuttuu")
     return rdf.findall(f"{{{RDF_NS}}}Description") or [
-        ET.SubElement(rdf, f"{{{RDF_NS}}}Description", {f"{{{RDF_NS}}}about": ""})]
+        ET.SubElement(rdf, f"{{{RDF_NS}}}Description", {f"{{{RDF_NS}}}about": ""})
+    ]
 
 
 def _values(descriptions: list[ET.Element], name: str) -> set[str]:
@@ -244,8 +251,9 @@ def _values(descriptions: list[ET.Element], name: str) -> set[str]:
     return out | {(c.text or "").strip() for d in descriptions for c in d.findall(tag)}
 
 
-def _set_property(descriptions: list[ET.Element], name: str, value: str | None,
-                  removable: Iterable[str] | None = None) -> None:
+def _set_property(
+    descriptions: list[ET.Element], name: str, value: str | None, removable: Iterable[str] | None = None
+) -> None:
     """Set xmp:name wherever it is, as an attribute or a child element; add it as an attribute.
 
     None removes it, but only where its value is in ``removable`` (when given).
@@ -269,7 +277,7 @@ def _set_property(descriptions: list[ET.Element], name: str, value: str | None,
                 continue
             i = list(desc).index(child)
             if i:
-                desc[i - 1].tail = child.tail       # the next sibling (or closing tag) keeps its indentation
+                desc[i - 1].tail = child.tail  # the next sibling (or closing tag) keeps its indentation
             else:
                 desc.text = child.tail
             desc.remove(child)
@@ -278,7 +286,7 @@ def _set_property(descriptions: list[ET.Element], name: str, value: str | None,
 
 
 def _write_atomic(path: Path, text: str) -> None:
-    path = path.resolve()           # a symlinked sidecar: replace the file it points to, keep the link
+    path = path.resolve()  # a symlinked sidecar: replace the file it points to, keep the link
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
@@ -307,4 +315,3 @@ def move_rejects(shot: Shot, kinds: set[str]) -> bool:
     if xmp.exists():
         shutil.move(str(xmp), str(xmp.parent / REJECT_DIR / xmp.name))
     return True
-

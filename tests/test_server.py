@@ -112,7 +112,7 @@ def test_library_lists_only_events_inside_root(server: Server) -> None:
     (ev,) = lib["years"][0]["events"]
     assert ev["rel_path"] == EVENT.as_posix()
     assert ev["shots"] == 10 and ev["reviewed"] + ev["unreviewed"] == 10
-    assert ev["candidates"] == 6               # motion, defocus and 4 similar burst frames
+    assert ev["candidates"] == 6  # motion, defocus and 4 similar burst frames
 
 
 def test_analysis_job_completes(server: Server) -> None:
@@ -124,17 +124,17 @@ def test_analysis_job_completes(server: Server) -> None:
 def test_event_groups_and_verdicts(server: Server) -> None:
     data = server.client.get(f"/api/events/{server.event_id}").json()
     shots = {s["name"]: s for g in data["groups"] for s in g["shots"]}
-    assert "link.jpg" not in shots                     # symlink pointing outside the root was skipped
+    assert "link.jpg" not in shots  # symlink pointing outside the root was skipped
     assert {n: shots[n]["auto_verdict"] for n in EXPECTED} == EXPECTED
     burst_groups = {shots[n]["group_id"] for n in BURST}
     assert len(burst_groups) == 1
     (burst,) = [g for g in data["groups"] if g["group_id"] in burst_groups]
     assert sorted(s["auto_verdict"] for s in burst["shots"]) == ["best", "similar", "similar", "similar", "similar"]
-    assert len(data["groups"]) == 6                    # 5 single shots + the burst
+    assert len(data["groups"]) == 6  # 5 single shots + the burst
     assert all(s["reason"] is not None for s in shots.values())
     assert shots["DSC_0100.NEF"]["files"] == [f"{EVENT.as_posix()}/DSC_0100.JPG", f"{EVENT.as_posix()}/DSC_0100.NEF"]
     assert len(data["sharpness"]) == 10 and data["sharpness"] == sorted(data["sharpness"])
-    assert data["median_sharp"] == (data["sharpness"][4] + data["sharpness"][5]) / 2     # as judge() takes it
+    assert data["median_sharp"] == (data["sharpness"][4] + data["sharpness"][5]) / 2  # as judge() takes it
     assert data["settings"]["hamming"] == 40
 
 
@@ -168,7 +168,12 @@ def test_analyse_unknown_event(server: Server) -> None:
 
 def test_settings_defaults(server: Server) -> None:
     assert server.client.get("/api/settings").json() == {
-        "gap": 3.0, "hamming": 40, "abs_blur": 10.0, "rel_blur": 0.25, "sim_keep": 0.0}
+        "gap": 3.0,
+        "hamming": 40,
+        "abs_blur": 10.0,
+        "rel_blur": 0.25,
+        "sim_keep": 0.0,
+    }
 
 
 def test_static_index(server: Server) -> None:
@@ -190,10 +195,19 @@ def test_ui_files_refer_to_no_other_origin() -> None:
     """The page works offline: no file of the UI names a URL of another site (the policy would block it anyway)."""
     files = [p for p in server_mod.STATIC_DIR.rglob("*") if p.suffix in (".html", ".js", ".css")]
     assert {p.relative_to(server_mod.STATIC_DIR).as_posix() for p in files} >= {
-        "index.html", "app.js", "app.css", "event.js", "grid.js", "keys.js", "review.js", "vendor/preact.js",
-        "vendor/hooks.js", "vendor/htm.js"}
+        "index.html",
+        "app.js",
+        "app.css",
+        "event.js",
+        "grid.js",
+        "keys.js",
+        "review.js",
+        "vendor/preact.js",
+        "vendor/hooks.js",
+        "vendor/htm.js",
+    }
     for p in files:
-        text = p.read_text().replace("http://www.w3.org/", "")    # Preact's SVG and MathML namespace names
+        text = p.read_text().replace("http://www.w3.org/", "")  # Preact's SVG and MathML namespace names
         assert not re.search(r"""(?:https?:)?//[a-z0-9.-]+\.[a-z]{2,}/""", text, re.I), p
         for target in re.findall(r"""(?:\bfrom|\bimport)\s*["']([^"']+)["']|(?:src|href)=["']([^"']+)["']""", text):
             ref = next(t for t in target if t)
@@ -218,7 +232,7 @@ def test_decision_and_undo(clean: Server) -> None:
     assert shot["user_verdict"] == "reject" and shot["rating"] is None and shot["decided_at"]
 
     (shot,) = client.patch(f"/api/shots/{shot_id}", json={"rating": 4}).json()["shots"]
-    assert (shot["user_verdict"], shot["rating"]) == ("reject", 4)          # the verdict is kept
+    assert (shot["user_verdict"], shot["rating"]) == ("reject", 4)  # the verdict is kept
 
     undo = client.post("/api/decisions/undo", headers=JSON).json()
     assert [(s["user_verdict"], s["rating"]) for s in undo["shots"]] == [("reject", None)]
@@ -245,7 +259,7 @@ def test_group_accept_is_undone_as_one_batch(clean: Server) -> None:
     client, shots = clean.client, clean.shots()
     burst = {n: shots[n] for n in BURST}
     best = next(n for n, s in burst.items() if s["auto_verdict"] == "best")
-    other = next(n for n in BURST if n != best)        # suggested "similar", kept by hand
+    other = next(n for n in BURST if n != best)  # suggested "similar", kept by hand
     client.patch(f"/api/shots/{burst[other]['id']}", json={"user_verdict": "keep", "rating": 3})
     client.patch(f"/api/shots/{burst[best]['id']}", json={"rating": 5})
     undecided = set(BURST) - {other}
@@ -253,19 +267,20 @@ def test_group_accept_is_undone_as_one_batch(clean: Server) -> None:
     resp = client.post(f"/api/groups/{clean.event_id}/{burst[best]['group_id']}/accept", headers=JSON)
     assert resp.status_code == 200
     after = {s["name"]: s for s in resp.json()["shots"]}
-    assert set(after) == undecided                     # the decision made by hand is left alone
+    assert set(after) == undecided  # the decision made by hand is left alone
     assert {n: s["user_verdict"] for n, s in after.items()} == {n: "keep" if n == best else "reject" for n in after}
-    assert after[best]["rating"] == 5                  # accept sets the verdict only
+    assert after[best]["rating"] == 5  # accept sets the verdict only
     assert clean.shots()[other]["user_verdict"] == "keep"
 
     client.patch(f"/api/shots/{shots['sharp.jpg']['id']}", json={"user_verdict": "keep"})
     assert [s["name"] for s in client.post("/api/decisions/undo", headers=JSON).json()["shots"]] == ["sharp.jpg"]
 
     undone = {s["name"]: s for s in client.post("/api/decisions/undo", headers=JSON).json()["shots"]}
-    assert set(undone) == undecided                    # the whole group in one step
+    assert set(undone) == undecided  # the whole group in one step
     now = clean.shots()
     assert {n: (now[n]["user_verdict"], now[n]["rating"]) for n in BURST} == {
-        n: ("keep", 3) if n == other else (None, 5) if n == best else (None, None) for n in BURST}
+        n: ("keep", 3) if n == other else (None, 5) if n == best else (None, None) for n in BURST
+    }
 
 
 def test_group_accept_with_everything_decided(clean: Server) -> None:
@@ -305,9 +320,20 @@ def raw_get(app: FastAPI, path: str) -> tuple[int, bytes]:
             elif msg["type"] == "http.response.body":
                 body += msg.get("body", b"")
 
-        scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "GET",
-                 "scheme": "http", "path": path, "raw_path": path.encode(), "query_string": b"", "root_path": "",
-                 "headers": [(b"host", b"127.0.0.1:8765")], "server": ("127.0.0.1", 8765), "client": ("testclient", 1)}
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "root_path": "",
+            "headers": [(b"host", b"127.0.0.1:8765")],
+            "server": ("127.0.0.1", 8765),
+            "client": ("testclient", 1),
+        }
         await app(scope, receive, send)
 
     asyncio.run(run())
@@ -319,21 +345,24 @@ def test_files_inside_root_are_served(server: Server) -> None:
     assert resp.status_code == 200
     assert resp.content == (server.root / EVENT / "sharp.jpg").read_bytes()
     assert server.client.get(f"/api/files/{EVENT.as_posix()}/missing.jpg").status_code == 404
-    assert server.client.get("/api/files/2025").status_code == 404          # folders are not files
+    assert server.client.get("/api/files/2025").status_code == 404  # folders are not files
 
 
-@pytest.mark.parametrize("path", [
-    "/api/files/../secret.jpg",
-    "/api/files/2025/2025-06-01-test/../../../secret.jpg",
-    "/api/files/%2e%2e/secret.jpg",
-    "/api/files/2025/%2e%2e/%2E%2E/secret.jpg",
-    "/api/files/..%2fsecret.jpg",
-    "/api/files/2025/2025-06-01-test/link.jpg",                       # symlink to ../../../secret.jpg
-    "/api/files/2025/2025-07-01-elsewhere/x.jpg",                     # inside a symlinked folder
-    "/..%2f..%2fsecret.jpg",                                          # static files
-    "/%2e%2e/%2e%2e/secret.jpg",
-    "/../secret.jpg",
-])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/files/../secret.jpg",
+        "/api/files/2025/2025-06-01-test/../../../secret.jpg",
+        "/api/files/%2e%2e/secret.jpg",
+        "/api/files/2025/%2e%2e/%2E%2E/secret.jpg",
+        "/api/files/..%2fsecret.jpg",
+        "/api/files/2025/2025-06-01-test/link.jpg",  # symlink to ../../../secret.jpg
+        "/api/files/2025/2025-07-01-elsewhere/x.jpg",  # inside a symlinked folder
+        "/..%2f..%2fsecret.jpg",  # static files
+        "/%2e%2e/%2e%2e/secret.jpg",
+        "/../secret.jpg",
+    ],
+)
 def test_path_traversal_is_rejected(server: Server, path: str) -> None:
     for status, body in (raw_get(server.app, path), (lambda r: (r.status_code, r.content))(server.client.get(path))):
         assert status in (403, 404), path
@@ -342,7 +371,7 @@ def test_path_traversal_is_rejected(server: Server, path: str) -> None:
 
 def test_absolute_paths_are_rejected(server: Server) -> None:
     for target in (server.root.parent / "secret.jpg", server.root / EVENT / "sharp.jpg"):
-        status, body = raw_get(server.app, f"/api/files/{target}")       # /api/files//abs/path
+        status, body = raw_get(server.app, f"/api/files/{target}")  # /api/files//abs/path
         assert status == 403 and SECRET not in body
         assert server.client.get(f"/api/files/{str(target).replace('/', '%2F')}").status_code == 403
 
@@ -362,7 +391,7 @@ def test_broker_stream() -> None:
         stream = broker.stream(is_disconnected, lambda: ["event: job\ndata: {}\n\n"])
         got = [await anext(stream)]
         pending = asyncio.ensure_future(anext(stream))
-        await asyncio.sleep(0.05)                       # subscribed and waiting
+        await asyncio.sleep(0.05)  # subscribed and waiting
         t = threading.Thread(target=broker.publish, args=("job", {"id": 1, "done": 2}))
         t.start()
         t.join()
@@ -383,7 +412,7 @@ def test_snapshot_is_taken_after_subscribing() -> None:
         return False
 
     def initial() -> list[str]:
-        broker.publish("job", {"id": 1, "status": "done"})      # e.g. the job finishes right now
+        broker.publish("job", {"id": 1, "status": "done"})  # e.g. the job finishes right now
         return []
 
     async def run() -> str:
@@ -395,12 +424,15 @@ def test_snapshot_is_taken_after_subscribing() -> None:
 # --------------------------------------------------------------------------- #
 # Other web sites: CSRF and DNS rebinding
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("method, path, body", [
-    ("POST", "/api/decisions/undo", None),
-    ("POST", "/api/groups/{event}/{group}/accept", None),
-    ("PATCH", "/api/shots/{shot}", {"user_verdict": "reject"}),
-    ("POST", "/api/analyse", {"scope": "all"}),
-])
+@pytest.mark.parametrize(
+    "method, path, body",
+    [
+        ("POST", "/api/decisions/undo", None),
+        ("POST", "/api/groups/{event}/{group}/accept", None),
+        ("PATCH", "/api/shots/{shot}", {"user_verdict": "reject"}),
+        ("POST", "/api/analyse", {"scope": "all"}),
+    ],
+)
 def test_writes_from_other_sites_are_refused(clean: Server, method: str, path: str, body: Any) -> None:
     client = clean.client
     shot_id = clean.shots()["sharp.jpg"]["id"]
@@ -448,11 +480,13 @@ def test_foreign_host_error_says_what_to_do(tmp_path: Path) -> None:
     root = tmp_path / "lib"
     (root / "2025").mkdir(parents=True)
     with TestClient(create_app(root, tmp_path / "k.sqlite", allowed_hosts=[*LOOPBACK_HOSTS, "kone.local"])) as client:
-        assert client.get("/api/library").status_code == 400                     # Host: testserver
+        assert client.get("/api/library").status_code == 400  # Host: testserver
         assert client.get("/api/library", headers={"Host": "kone.local:8765"}).status_code == 200
         detail = client.get("/api/library", headers={"Host": "mypc:8765"}).json()["detail"]
-    assert detail == ('tuntematon Host-otsake "mypc"; käytä osoitetta 127.0.0.1 tai [::1] tai kone.local tai '
-                      "localhost tai käynnistä palvelin valitsimella --allow-host mypc")
+    assert detail == (
+        'tuntematon Host-otsake "mypc"; käytä osoitetta 127.0.0.1 tai [::1] tai kone.local tai '
+        "localhost tai käynnistä palvelin valitsimella --allow-host mypc"
+    )
 
 
 def test_same_origin_bodyless_writes_need_no_content_type(clean: Server) -> None:
@@ -465,8 +499,12 @@ def test_same_origin_bodyless_writes_need_no_content_type(clean: Server) -> None
     # without an Origin (curl, or an old browser posting a form) the content type is still required
     assert client.post("/api/decisions/undo").status_code == 415
     assert client.post("/api/decisions/undo", headers={"Origin": "http://evil.example"}).status_code == 403
-    assert client.post("/api/decisions/undo", headers={"Origin": BASE, "Content-Type": "text/plain"},
-                       content=b"x").status_code == 415
+    assert (
+        client.post(
+            "/api/decisions/undo", headers={"Origin": BASE, "Content-Type": "text/plain"}, content=b"x"
+        ).status_code
+        == 415
+    )
 
 
 def test_ui_writes(clean: Server) -> None:
@@ -474,8 +512,9 @@ def test_ui_writes(clean: Server) -> None:
     client, shots = clean.client, clean.shots()
     ui = {"Origin": BASE, **JSON}
     shot_id = shots["sharp.jpg"]["id"]
-    (shot,) = client.patch(f"/api/shots/{shot_id}", json={"user_verdict": None, "rating": None}, headers=ui) \
-        .json()["shots"]
+    (shot,) = client.patch(f"/api/shots/{shot_id}", json={"user_verdict": None, "rating": None}, headers=ui).json()[
+        "shots"
+    ]
     assert (shot["user_verdict"], shot["rating"]) == (None, None)
     group = shots[BURST[0]]["group_id"]
     resp = client.post(f"/api/groups/{clean.event_id}/{group}/accept", json={}, headers=ui)
@@ -550,9 +589,11 @@ def test_decisions_get_through_while_an_analysis_scans(own: Server, monkeypatch:
 
 def _short_timeout(init: Any) -> Any:
     """Store.__init__ with a 1 s lock timeout, so a held lock fails the test quickly instead of after 30 s."""
+
     def wrapped(self: Store, path: Path | str) -> None:
         init(self, path)
         self.db.execute("PRAGMA busy_timeout = 1000")
+
     return wrapped
 
 
@@ -581,7 +622,7 @@ def test_analysis_writes_previews(server: Server) -> None:
         assert all(previews.preview_path(cache.cache_dir, sig, size).is_file() for size in previews.SIZES), name
 
 
-@pytest.mark.parametrize(("size", "dims"), [("grid", (400, 300)), ("full", (800, 600))])   # never scaled up
+@pytest.mark.parametrize(("size", "dims"), [("grid", (400, 300)), ("full", (800, 600))])  # never scaled up
 def test_preview_sizes(server: Server, size: str, dims: tuple[int, int]) -> None:
     url = server.shots()["sharp.jpg"]["preview"][size]
     resp = server.client.get(url)
@@ -628,15 +669,15 @@ def test_preview_is_cached_until_the_file_changes(own: Server, monkeypatch: pyte
     url = f"/api/shots/{shot_id}/preview"
     first = own.client.get(url)
     assert own.client.get(url).content == first.content
-    assert made == []                                             # made by the analysis already
+    assert made == []  # made by the analysis already
 
     src = own.root / EVENT / "sharp.jpg"
-    save_jpeg(src, texture(8), T0)                                # another picture
+    save_jpeg(src, texture(8), T0)  # another picture
     st = src.stat()
     os.utime(src, (st.st_atime, st.st_mtime + 10))
     changed = own.client.get(url, headers={"If-None-Match": first.headers["etag"]})
     assert changed.status_code == 200 and changed.headers["etag"] != first.headers["etag"]
-    old_url = own.shots()["sharp.jpg"]["preview"]["grid"]        # not analysed again: the old version
+    old_url = own.shots()["sharp.jpg"]["preview"]["grid"]  # not analysed again: the old version
     assert own.client.get(old_url).headers["cache-control"] == "private, no-cache"
     assert changed.content != first.content and made == ["grid"]
     assert own.client.get(url).content == changed.content and made == ["grid"]
@@ -653,20 +694,24 @@ def test_broken_image_preview_is_an_error(own: Server) -> None:
     assert resp.json()["detail"] == "kuvaa ei voi lukea: tiedosto on rikki tai sen muotoa ei tueta"
 
 
-@pytest.mark.parametrize(("error", "status", "detail"), [
-    (RawpyMissing("rawpy not installed, cannot read RAW"), 500, "RAW-kuvan esikatselu vaatii rawpy-paketin"),
-    (previews.NoAccess("[Errno 13] Permission denied"), 500, "kuvaa ei voi lukea: ei lukuoikeutta tiedostoon"),
-    (PermissionError(13, "Permission denied"), 500, "esikatselua ei voi tallentaa välimuistiin: Permission denied"),
-])
-def test_preview_errors(own: Server, monkeypatch: pytest.MonkeyPatch, error: Exception, status: int,
-                        detail: str) -> None:
+@pytest.mark.parametrize(
+    ("error", "status", "detail"),
+    [
+        (RawpyMissing("rawpy not installed, cannot read RAW"), 500, "RAW-kuvan esikatselu vaatii rawpy-paketin"),
+        (previews.NoAccess("[Errno 13] Permission denied"), 500, "kuvaa ei voi lukea: ei lukuoikeutta tiedostoon"),
+        (PermissionError(13, "Permission denied"), 500, "esikatselua ei voi tallentaa välimuistiin: Permission denied"),
+    ],
+)
+def test_preview_errors(
+    own: Server, monkeypatch: pytest.MonkeyPatch, error: Exception, status: int, detail: str
+) -> None:
     def fail(*args: Any) -> None:
         raise error
 
     monkeypatch.setattr(previews, "make", fail)
     shot_id = own.shots()["sharp.jpg"]["id"]
     src = own.root / EVENT / "sharp.jpg"
-    os.utime(src, (src.stat().st_atime, src.stat().st_mtime + 10))   # not in the cache any more
+    os.utime(src, (src.stat().st_atime, src.stat().st_mtime + 10))  # not in the cache any more
     resp = own.client.get(f"/api/shots/{shot_id}/preview")
     assert (resp.status_code, resp.json()["detail"]) == (status, detail)
 
@@ -717,7 +762,7 @@ def test_missing_shot_leaves_the_event(own: Server) -> None:
 
     # back again: present, judged, the decision kept
     moved_away.rename(own.root / EVENT / gone)
-    assert analyse(own)["total"] == 0                           # unchanged file: still a cache hit
+    assert analyse(own)["total"] == 0  # unchanged file: still a cache hit
     back = own.shots()[gone]
     assert (back["state"], back["user_verdict"], back["rating"]) == ("present", "keep", 2)
     assert back["auto_verdict"] in ("best", "similar") and back["group_id"] == group
@@ -737,7 +782,7 @@ def test_library_shows_which_events_are_analysed(own: Server) -> None:
 
 def test_next_analysis_uses_stored_settings(own: Server) -> None:
     store = Store(own.db)
-    store.set_settings({"gap": 0.1})                              # burst frames are 0.3 s apart
+    store.set_settings({"gap": 0.1})  # burst frames are 0.3 s apart
     store.commit()
     store.close()
     job = analyse(own)
@@ -749,14 +794,14 @@ def test_next_analysis_uses_stored_settings(own: Server) -> None:
 
 
 def crash(*args: Any) -> None:
-    os._exit(1)                                                   # like an OOM kill or a segfault in a codec
+    os._exit(1)  # like an OOM kill or a segfault in a codec
 
 
 def test_broken_pool_is_replaced(own: Server, monkeypatch: pytest.MonkeyPatch) -> None:
     runner: JobRunner = own.app.state.runner
     published: list[dict[str, Any]] = []
     monkeypatch.setattr(runner.broker, "publish", lambda event, data: published.append(data))
-    (own.root / EVENT / "sharp.jpg").touch()                     # new mtime: analysed again
+    (own.root / EVENT / "sharp.jpg").touch()  # new mtime: analysed again
     monkeypatch.setattr(server_mod, "analyse_file", crash)
     job = analyse(own)
     assert (job["status"], job["error"]) == ("failed", "analyysiprosessi kaatui; yritä uudelleen")
@@ -780,6 +825,7 @@ def test_job_for_a_deleted_event_fails_clearly(own: Server) -> None:
 
 def test_failed_analysis_keeps_analysed_at(own: Server, monkeypatch: pytest.MonkeyPatch) -> None:
     """The UI tells analysed events from the others by analysed_at: a failed job must not touch it."""
+
     def boom(*args: Any) -> None:
         raise RuntimeError("rikki")
 
@@ -796,7 +842,7 @@ def test_settings_change_rejudges_from_stored_metrics(own: Server, monkeypatch: 
         raise AssertionError("analyse_file called")
 
     monkeypatch.setattr(server_mod, "analyse_file", no_analysis)
-    resp = own.client.put("/api/settings", json={"gap": 0.1}, headers=JSON)    # burst frames are 0.3 s apart
+    resp = own.client.put("/api/settings", json={"gap": 0.1}, headers=JSON)  # burst frames are 0.3 s apart
     assert resp.status_code == 200
     assert resp.json() == {"settings": {**own.client.get("/api/settings").json()}, "events": 1}
     assert resp.json()["settings"]["gap"] == 0.1
@@ -805,7 +851,7 @@ def test_settings_change_rejudges_from_stored_metrics(own: Server, monkeypatch: 
     assert len(data["groups"]) == 10
     assert {s["auto_verdict"] for g in data["groups"] for s in g["shots"] if s["name"] in BURST} == {"keep"}
     ev = own.client.get("/api/library").json()["years"][0]["events"][0]
-    assert ev["candidates"] == 2                                  # motion and defocus only
+    assert ev["candidates"] == 2  # motion and defocus only
 
     # every shot below the absolute threshold: all blurry
     own.client.put("/api/settings", json={"abs_blur": 1e5}, headers=JSON)
@@ -844,8 +890,20 @@ def test_decisions_survive_a_rejudge(own: Server) -> None:
     assert [(s["name"], s["user_verdict"], s["rating"]) for s in undone] == [(similar, None, None)]
 
 
-@pytest.mark.parametrize("body", [{}, {"blur": 1}, {"hamming": 300}, {"hamming": 1.5}, {"rel_blur": 2},
-                                  {"abs_blur": -1}, {"abs_blur": 1e7}, {"gap": -0.5}, {"sim_keep": 1.1}])
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"blur": 1},
+        {"hamming": 300},
+        {"hamming": 1.5},
+        {"rel_blur": 2},
+        {"abs_blur": -1},
+        {"abs_blur": 1e7},
+        {"gap": -0.5},
+        {"sim_keep": 1.1},
+    ],
+)
 def test_settings_are_validated(server: Server, body: dict[str, Any]) -> None:
     assert server.client.put("/api/settings", json=body, headers=JSON).status_code == 422
     assert server.client.get("/api/settings").json()["hamming"] == 40
@@ -862,7 +920,7 @@ def test_settings_change_waits_for_a_judging_job(own: Server, monkeypatch: pytes
     judging, release = threading.Event(), threading.Event()
 
     def slow(shots: Any, settings: Any) -> None:
-        if threading.current_thread().name == "karsija-jobs":     # the job, not the request's re-judge
+        if threading.current_thread().name == "karsija-jobs":  # the job, not the request's re-judge
             judging.set()
             release.wait(10)
         judge(shots, settings)
@@ -873,9 +931,9 @@ def test_settings_change_waits_for_a_judging_job(own: Server, monkeypatch: pytes
     put = threading.Thread(target=lambda: own.client.put("/api/settings", json={"gap": 0.1}, headers=JSON))
     put.start()
     time.sleep(0.3)
-    assert put.is_alive()                                         # waits for the job's lock
+    assert put.is_alive()  # waits for the job's lock
     release.set()
     put.join(10)
     assert not put.is_alive()
     assert wait_for_job(own.client, job_id)["status"] == "done"
-    assert {s["auto_verdict"] for n, s in own.shots().items() if n in BURST} == {"keep"}    # gap 0.1, not 3
+    assert {s["auto_verdict"] for n, s in own.shots().items() if n in BURST} == {"keep"}  # gap 0.1, not 3

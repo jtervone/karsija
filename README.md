@@ -480,9 +480,13 @@ curl -o full.jpg 'localhost:8765/api/shots/1/preview?size=full'
 uv sync --locked
 uv run pytest
 uv run ruff check
-uv run mypy
+uv run ruff format --check   # `uv run ruff format` fixes it
+uv run mypy karsija
 ```
 
 The tests generate a synthetic library; no real photos or network are needed.
+CI (`.github/workflows/ci.yml`) runs these on every pull request and push to `main`, on Python 3.12 and 3.13, with
+Node 22 so the `tests/js/` UI tests also run. It also runs `node --check` on `karsija/static/`, builds the wheel and
+checks that the wheel includes the static files.
 The UI's logic is tested in `tests/js/` with Node's own test runner (`node --test tests/js/`); pytest runs those
 tests too when `node` is installed and skips them otherwise.

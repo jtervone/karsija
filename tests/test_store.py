@@ -16,8 +16,17 @@ from karsija.store import CACHE_VERSION, RAW_CACHE_VERSION, SCHEMA, SCHEMA_VERSI
 
 def make_shot(path: Path) -> Shot:
     path.write_bytes(b"jpeg")
-    return Shot(key=str(path), files=[str(path)], taken=1.5, sharp=42.0, sharp_global=7.0,
-                clip_hi=0.01, clip_lo=0.02, dhash="ab" * 32, hist=[0.5, 0.25])
+    return Shot(
+        key=str(path),
+        files=[str(path)],
+        taken=1.5,
+        sharp=42.0,
+        sharp_global=7.0,
+        clip_hi=0.01,
+        clip_lo=0.02,
+        dhash="ab" * 32,
+        hist=[0.5, 0.25],
+    )
 
 
 def test_cache_hit_and_miss_on_mtime_change(tmp_path: Path) -> None:
@@ -55,7 +64,7 @@ def test_raw_only_shots_have_their_own_cache_version(tmp_path: Path) -> None:
     jpg.write_bytes(b"jpeg")
     assert Store.signature([str(raw)]).startswith(f"v{RAW_CACHE_VERSION}|")
     assert Store.signature([str(jpg), str(raw)]).startswith(f"v{CACHE_VERSION}|")
-    assert Store.signature([str(jpg)]).startswith(f"v{CACHE_VERSION}|") and CACHE_VERSION == 4   # legacy cache
+    assert Store.signature([str(jpg)]).startswith(f"v{CACHE_VERSION}|") and CACHE_VERSION == 4  # legacy cache
     store = Store(tmp_path / "karsija.sqlite")
     old_sig = Store.signature([str(raw)]).replace(f"v{RAW_CACHE_VERSION}|", "v4|", 1)
     store.put(store.event_id("2025/2025-06-01-x"), Shot(key=str(raw), files=[str(raw)], sharp=50.0), old_sig)
@@ -114,7 +123,7 @@ def test_mark_moved_and_back(tmp_path: Path) -> None:
     store.put(event, shot, "sig")
     store.mark_moved([shot.key])
     assert store.db.execute("SELECT state FROM shots").fetchone() == ("moved",)
-    store.put(event, shot, "sig2")         # moved back and analysed again
+    store.put(event, shot, "sig2")  # moved back and analysed again
     assert store.db.execute("SELECT state FROM shots").fetchone() == ("present",)
 
 
@@ -231,10 +240,14 @@ def test_upgrade_from_schema_2(tmp_path: Path) -> None:
     assert store.db.execute("PRAGMA user_version").fetchone() == (SCHEMA_VERSION,)
     analysed = store.db.execute("SELECT name, analysed_at FROM events ORDER BY id").fetchall()
     # the end of the last finished job that covered the event; 0 when no job tells
-    assert analysed == [("2025-06-01-judged", 200), ("2025-06-02-not-judged", None), ("2025-06-03-empty", None),
-                        ("2025-06-04-no-job", 0)]
+    assert analysed == [
+        ("2025-06-01-judged", 200),
+        ("2025-06-02-not-judged", None),
+        ("2025-06-03-empty", None),
+        ("2025-06-04-no-job", 0),
+    ]
     store.close()
-    assert Store(path).db.execute("SELECT COUNT(*) FROM events").fetchone() == (4,)   # reopening does not upgrade again
+    assert Store(path).db.execute("SELECT COUNT(*) FROM events").fetchone() == (4,)  # reopening does not upgrade again
 
 
 def test_mark_analysed(tmp_path: Path) -> None:

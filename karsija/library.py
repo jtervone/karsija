@@ -20,7 +20,7 @@ except ImportError:  # RAW support is optional
 JPEG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".heic"}
 RAW_EXT = {".nef", ".nrw", ".cr2", ".cr3", ".arw", ".dng", ".orf", ".rw2", ".raf", ".pef", ".srw"}
 EVENT_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
-ANALYSIS_EDGE = 1024          # long edge used for all measurements
+ANALYSIS_EDGE = 1024  # long edge used for all measurements
 RAW_FLIP = {3: 3, 5: 8, 6: 6}  # LibRaw sizes.flip -> EXIF orientation (180, 90 counter-clockwise, 90 clockwise)
 
 
@@ -56,7 +56,7 @@ def open_image(path: Path, draft: int | None = None) -> Image.Image:
             elif thumb is not None and thumb.format == rawpy.ThumbFormat.BITMAP:
                 pil = Image.fromarray(np.asarray(thumb.data))
             else:
-                rgb = raw.postprocess(half_size=True, use_camera_wb=True)      # already turned upright
+                rgb = raw.postprocess(half_size=True, use_camera_wb=True)  # already turned upright
                 return Image.fromarray(rgb)
             flip = RAW_FLIP.get(int(getattr(getattr(raw, "sizes", None), "flip", 0) or 0))
             if flip is not None and pil.getexif().get(0x0112, 1) == 1:
@@ -85,6 +85,7 @@ def load_image(path: Path) -> tuple[np.ndarray, Image.Image | None]:
 def _apply_orientation(pil: Image.Image) -> Image.Image:
     try:
         from PIL import ImageOps
+
         return ImageOps.exif_transpose(pil)
     except Exception:
         return pil
@@ -115,10 +116,10 @@ def capture_time(path: Path, pil: Image.Image | None) -> float:
 _EXIF_IFD0 = {271: "make", 272: "model"}
 _EXIF_SUB = {
     36867: "datetime_original",
-    33434: "exposure_time",       # seconds
+    33434: "exposure_time",  # seconds
     33437: "f_number",
     34855: "iso",
-    37386: "focal_length",        # mm
+    37386: "focal_length",  # mm
     41989: "focal_length_35mm",
     42035: "lens_make",
     42036: "lens_model",
@@ -160,7 +161,7 @@ def read_exif(primary: str, files: list[str]) -> dict[str, Any]:
         if src.suffix.lower() in RAW_EXT:
             _, pil = load_image(src)
             return exif_metadata(pil)
-        with Image.open(src) as img:        # reads the header only, no decoding
+        with Image.open(src) as img:  # reads the header only, no decoding
             return exif_metadata(img)
     except Exception:
         return {}
@@ -173,13 +174,13 @@ def _exif_value(val: Any) -> Any:
         val = val.decode("ascii", "replace")
     if isinstance(val, str):
         return val.strip("\x00 ")
-    if isinstance(val, tuple):           # e.g. ISO as a 1-tuple
+    if isinstance(val, tuple):  # e.g. ISO as a 1-tuple
         return _exif_value(val[0]) if val else None
     try:
-        f = float(val)                   # IFDRational, int
+        f = float(val)  # IFDRational, int
     except (TypeError, ValueError, ZeroDivisionError):
         return None
-    if f != f:                           # 0/0 rationals are NaN
+    if f != f:  # 0/0 rationals are NaN
         return None
     return int(f) if isinstance(val, int) else round(f, 6)
 
@@ -242,4 +243,3 @@ def collect_shots(event_dir: Path) -> list[tuple[str, list[str]]]:
         primary = raw[0] if raw else paths[0]
         out.append((str(primary), [str(p) for p in sorted(paths)]))
     return out
-
