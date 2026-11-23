@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -17,15 +20,17 @@ jobs:
       matrix:
         python-version: ["3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
 
       # tests/test_ui_js.py skips without Node, so install it to make sure the UI logic is tested
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
 
@@ -58,7 +63,10 @@ jobs:
           import sys
           import zipfile
 
-          names = zipfile.ZipFile(glob.glob("dist/*.whl")[0]).namelist()
+          wheels = glob.glob("dist/*.whl")
+          if len(wheels) != 1:
+              sys.exit(f"expected one wheel in dist/, found {wheels}")
+          names = zipfile.ZipFile(wheels[0]).namelist()
           static = sorted(n for n in names if n.startswith("karsija/static/"))
           print("\n".join(static))
           required = ["index.html", "app.js", "app.css", "vendor/preact.js"]
