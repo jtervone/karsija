@@ -93,6 +93,16 @@ picks a shot, a double-click opens it (like Enter). The whole event can be revie
 | Esc | back to the grid; in the grid, closes the message under the toolbar |
 | ? | all of these on the page |
 
+**Asetukset** (in the grid's toolbar) opens the grouping and judging thresholds, the same for every event: the
+sharpness limit (`abs_blur`), the fraction of the event's median under which a shot is blurry (`rel_blur`), the
+seconds between shots of a group (`gap`), how different shots of a group may look (`hamming`, dHash bits) and how
+sharp a group's other shots must be to be kept beside its best (`sim_keep`, 0 = only the best). Beside them, the
+event's sharpness as a histogram on a logarithmic axis, with lines at the limit and at `rel_blur` × the median; the
+lines move while the sliders do, the shots under the higher one (judged blurry) are red, and the caption counts them.
+**Käytä** stores the thresholds and groups and judges every analysed event again from the stored metrics (no image is
+analysed again); the grid, its counts and Kirjasto's then show the new verdicts. Your decisions stay as they are,
+also on shots whose group or verdict changes.
+
 Decisions show at once and are saved in the background, one at a time in the order they were made. One the server
 refuses is taken back, and its error stays under the toolbar until closed (× or Esc), counting further failures.
 Ctrl+Z undoes the last decision stored on the server, even one made before the page was opened or in another event
@@ -199,8 +209,13 @@ repeats the work even if `scan` has already analysed the library. An analysis th
 server stops shows as failed after a restart; start it again. Asking for an analysis while one with the same scope
 is still queued or running returns that job (200) instead of starting another.
 
-The server groups and judges with the default thresholds of `scan` (see `GET /api/settings`). The `scan`
-threshold flags do not apply to it, and the thresholds cannot be changed yet.
+The server groups and judges with its own thresholds, by default those of `scan` (`GET /api/settings`); the `scan`
+threshold flags do not apply to it. `PUT /api/settings` with any of `{"abs_blur": ≥ 0, "rel_blur": 0–1, "gap": 0–3600
+(seconds), "hamming": 0–256, "sim_keep": 0–1}` changes them (a field left out keeps its value, `null` puts back its
+default) and groups and judges every analysed event again from the stored metrics, without analysing any image.
+Decisions stay as they are, also on shots whose group or verdict changes, and so does the undo stack. It returns the
+`settings` in effect and how many `events` were judged again. `/api/events/{id}` also has `default_settings`,
+`median_sharp` and `sharpness` (the sharpness of each analysed shot, for the histogram).
 
 `GET /api/shots/{id}` returns one shot with its `exif`, which the shots of `/api/events/{id}` leave out:
 `datetime_original`, `exposure_time` (seconds), `f_number`, `iso`, `focal_length` and `focal_length_35mm` (mm),
@@ -246,7 +261,7 @@ curl -X POST localhost:8765/api/events/1/apply -H 'Content-Type: application/jso
 curl -X POST localhost:8765/api/applies/1/restore -H 'Content-Type: application/json'
 ```
 
-Send every POST/PATCH with `Content-Type: application/json`, even without a body (e.g.
+Send every POST/PUT/PATCH with `Content-Type: application/json`, even without a body (e.g.
 `curl -X POST localhost:8765/api/decisions/undo -H 'Content-Type: application/json'`).
 
 Previews: `GET /api/shots/{id}/preview?size=grid` (long edge 400 px, the default) or `size=full` (2560 px) returns
